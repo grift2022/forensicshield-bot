@@ -1,0 +1,13 @@
+﻿{
+  "name": "forensicshield-discord-bot",
+  "version": "1.0.0",
+  "description": "Bot de Discord para verificar roles en ForensicShield",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "express": "^4.18.2"
+  }
+}
