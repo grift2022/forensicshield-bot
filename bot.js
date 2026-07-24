@@ -6,9 +6,8 @@ const path = require('path');
 // ============ CONFIGURACIÓN DE ROLES ============
 const OWNER_ROLE_ID = '1200562213195362375';
 const ADMIN_ROLE_ID = '1530314208229458102';
-const VERIFIED_ROLE_ID = '1530261559429955725';
-const USER_ROLE_ID = '1530313975361703978';
-const ROLE_ID = OWNER_ROLE_ID;
+const VERIFIED_ROLE_ID = '1530261559429955725'; // Comprado/Verificado
+const USER_ROLE_ID = '1530313975361703978';     // User/No verificado
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 10000;
@@ -17,6 +16,7 @@ const PORT = process.env.PORT || 10000;
 const DATA_DIR = path.join(__dirname, 'data');
 const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
 const MEMBERS_FILE = path.join(DATA_DIR, 'members.json');
+const VERIFICATION_FILE = path.join(DATA_DIR, 'verification.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
@@ -30,8 +30,14 @@ if (fs.existsSync(MEMBERS_FILE)) {
     try { membersHistory = JSON.parse(fs.readFileSync(MEMBERS_FILE)); } catch { membersHistory = {}; }
 }
 
+let verificationData = {};
+if (fs.existsSync(VERIFICATION_FILE)) {
+    try { verificationData = JSON.parse(fs.readFileSync(VERIFICATION_FILE)); } catch { verificationData = {}; }
+}
+
 function saveInvites() { fs.writeFileSync(INVITES_FILE, JSON.stringify(invitesData, null, 2)); }
 function saveMembers() { fs.writeFileSync(MEMBERS_FILE, JSON.stringify(membersHistory, null, 2)); }
+function saveVerification() { fs.writeFileSync(VERIFICATION_FILE, JSON.stringify(verificationData, null, 2)); }
 
 // ============ CLIENTE DE DISCORD ============
 const client = new Client({
@@ -50,6 +56,7 @@ let antiRaidEnabled = false;
 let joinLogChannel = null;
 let leaveLogChannel = null;
 
+// ============ FUNCIÓN PARA VERIFICAR PERMISOS ============
 function hasPermission(member) {
     return member.roles.cache.has(OWNER_ROLE_ID) || member.roles.cache.has(ADMIN_ROLE_ID);
 }
@@ -60,13 +67,19 @@ client.once('ready', () => {
     console.log(`[✅] Servidores: ${client.guilds.cache.size}`);
     console.log(`[✅] Owner Role ID: ${OWNER_ROLE_ID}`);
     console.log(`[✅] Admin Role ID: ${ADMIN_ROLE_ID}`);
+    console.log(`[✅] Verified Role ID: ${VERIFIED_ROLE_ID}`);
+    console.log(`[✅] User Role ID: ${USER_ROLE_ID}`);
     
     client.guilds.cache.forEach(guild => {
         console.log(`[📁] Servidor: ${guild.name} (ID: ${guild.id})`);
         if (!invitesData[guild.id]) {
             invitesData[guild.id] = {};
         }
+        if (!verificationData[guild.id]) {
+            verificationData[guild.id] = { sent: false };
+        }
         saveInvites();
+        saveVerification();
     });
 });
 
@@ -78,7 +91,7 @@ client.on('messageCreate', async (message) => {
     const args = message.content.slice(1).trim().split(/ +/);
     const command = args.shift().toLowerCase();
 
-    // ===== COMANDO: !verificar =====
+    // ===== COMANDO: !verificar (público) =====
     if (command === 'verificar' || command === 'rol') {
         const member = message.member;
         if (!member) return;
@@ -95,7 +108,7 @@ client.on('messageCreate', async (message) => {
         message.reply(response);
     }
 
-    // ===== COMANDO: !invitaciones =====
+    // ===== COMANDO: !invitaciones (público) =====
     if (command === 'invitaciones' || command === 'invites') {
         try {
             const guild = message.guild;
@@ -116,7 +129,6 @@ client.on('messageCreate', async (message) => {
             sortedInvites.forEach((invite, index) => {
                 const inviter = invite.inviter ? invite.inviter.username : 'Desconocido';
                 const uses = invite.uses || 0;
-                const code = invite.code;
                 
                 description += `**#${index + 1}** 👤 ${inviter} → ${uses} usos\n`;
             });
@@ -130,37 +142,18 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ===== COMANDOS DE ADMIN =====
-    if (!hasPermission(message.member)) {
-        const adminCommands = ['anuncio', 'ticket', 'verificacion', 'anti-raid', 'llegadas'];
-        if (adminCommands.includes(command)) {
-            return message.reply('❌ No tienes permiso para usar este comando.');
-        }
-        return;
-    }
-
-    // ===== COMANDO: !anuncio (FIX) =====
-    if (command === 'anuncio') {
-        const text = args.join(' ');
-        if (!text) {
-            return message.reply('❌ Uso correcto: `!anuncio <mensaje>`');
-        }
-
-        try {
-            // Enviar el mensaje sin eliminar el original (para evitar errores de permisos)
-            await message.channel.send(text);
-            // Intentar eliminar el mensaje del usuario (opcional)
-            try { await message.delete(); } catch (e) {}
-        } catch (error) {
-            console.error('[!] Error en !anuncio:', error);
-            message.reply('❌ Error al enviar el anuncio. Asegúrate de que el bot tiene permisos de enviar mensajes.');
-        }
-    }
-
-    // ===== COMANDO: !verificacion =====
+    // ===== COMANDO: !verificacion (público, UNA SOLA VEZ) =====
     if (command === 'verificacion' || command === 'verificación') {
+        const guildId = message.guild.id;
+        
+        // Verificar si ya se envió el mensaje de verificación en este servidor
+        if (verificationData[guildId]?.sent) {
+            return message.reply('⚠️ El mensaje de verificación ya ha sido enviado en este servidor. Si necesitas reenviarlo, contacta con un administrador.');
+        }
+
         try {
-            try { await message.delete(); } catch (e) {}
+            // Eliminar el mensaje del usuario
+            await message.delete().catch(() => {});
 
             const embed = new EmbedBuilder()
                 .setColor(0x5865F2)
@@ -185,14 +178,42 @@ client.on('messageCreate', async (message) => {
                 components: [row]
             });
 
+            // Marcar como enviado
+            verificationData[guildId] = { sent: true };
+            saveVerification();
+
         } catch (error) {
             console.error('[!] Error en !verificacion:', error);
             message.reply('❌ Error al crear el panel de verificación.');
         }
     }
 
-    // ===== COMANDO: !ticket (FIX) =====
+    // ===== COMANDO: !anuncio (solo Owner y Admin) =====
+    if (command === 'anuncio') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
+        const text = args.join(' ');
+        if (!text) {
+            return message.reply('❌ Uso correcto: `!anuncio <mensaje>`');
+        }
+
+        try {
+            await message.channel.send(text);
+            try { await message.delete(); } catch (e) {}
+        } catch (error) {
+            console.error('[!] Error en !anuncio:', error);
+            message.reply('❌ Error al enviar el anuncio.');
+        }
+    }
+
+    // ===== COMANDO: !ticket (solo Owner y Admin) =====
     if (command === 'ticket') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
         try {
             try { await message.delete(); } catch (e) {}
 
@@ -217,41 +238,38 @@ client.on('messageCreate', async (message) => {
 
         } catch (error) {
             console.error('[!] Error en !ticket:', error);
-            message.reply('❌ Error al crear el panel de tickets. Asegúrate de que el bot tiene permisos de gestionar canales.');
+            message.reply('❌ Error al crear el panel de tickets.');
         }
     }
 
-    // ===== COMANDO: !anti-raid =====
+    // ===== COMANDO: !anti-raid (solo Owner) =====
     if (command === 'anti-raid' || command === 'antiraid') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
         antiRaidEnabled = !antiRaidEnabled;
         message.channel.send(antiRaidEnabled ? '🛡️ **Anti-Raid ACTIVADO**' : '🛡️ **Anti-Raid DESACTIVADO**');
     }
 
-    // ===== COMANDO: !llegadas =====
+    // ===== COMANDO: !llegadas (solo Owner) =====
     if (command === 'llegadas') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
         try {
             try { await message.delete(); } catch (e) {}
 
-            let logChannel = message.guild.channels.cache.find(ch => ch.name === 'logs-entradas-salidas');
-            if (!logChannel) {
-                logChannel = await message.guild.channels.create({
-                    name: 'logs-entradas-salidas',
-                    type: ChannelType.GuildText,
-                    permissionOverwrites: [
-                        { id: message.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                        { id: OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-                        { id: ADMIN_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
-                    ]
-                });
-            }
-
-            joinLogChannel = logChannel.id;
-            leaveLogChannel = logChannel.id;
+            // Usar el canal donde se ejecutó el comando
+            const channel = message.channel;
+            joinLogChannel = channel.id;
+            leaveLogChannel = channel.id;
 
             const embed = new EmbedBuilder()
                 .setColor(0x2196F3)
                 .setTitle('📋 SISTEMA DE ENTRADAS Y SALIDAS ACTIVADO')
-                .setDescription(`Se mostrarán en <#${logChannel.id}> las entradas y salidas de miembros.`)
+                .setDescription(`Se mostrarán en <#${channel.id}> las entradas y salidas de miembros.`)
                 .setTimestamp();
 
             await message.channel.send({ embeds: [embed] });
@@ -259,6 +277,69 @@ client.on('messageCreate', async (message) => {
         } catch (error) {
             console.error('[!] Error en !llegadas:', error);
             message.reply('❌ Error al activar el sistema de logs.');
+        }
+    }
+
+    // ===== COMANDO: !logs (solo Owner) =====
+    if (command === 'logs' || command === 'log') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
+        try {
+            const guild = message.guild;
+            
+            // Obtener todos los logs del servidor
+            const embed = new EmbedBuilder()
+                .setColor(0x5865F2)
+                .setTitle('📋 LOGS DEL SERVIDOR')
+                .setDescription(`Logs disponibles para ${guild.name}`)
+                .addFields(
+                    { name: '👥 Miembros', value: `${guild.memberCount}`, inline: true },
+                    { name: '📁 Canales', value: `${guild.channels.cache.size}`, inline: true },
+                    { name: '🎭 Roles', value: `${guild.roles.cache.size}`, inline: true }
+                )
+                .setTimestamp();
+
+            // Logs de invitaciones
+            let inviteLog = 'No hay invitaciones activas.';
+            const invites = await guild.invites.fetch();
+            if (invites.size > 0) {
+                const sorted = invites.sort((a, b) => b.uses - a.uses);
+                inviteLog = sorted.map((inv, i) => 
+                    `**#${i+1}** ${inv.inviter?.username || 'Desconocido'} → ${inv.uses} usos`
+                ).join('\n');
+                if (inviteLog.length > 1000) inviteLog = inviteLog.substring(0, 1000) + '...';
+            }
+
+            embed.addFields({ name: '📊 Invitaciones', value: inviteLog });
+
+            // Logs de miembros recientes
+            const members = await guild.members.fetch();
+            const recentMembers = members
+                .sort((a, b) => b.joinedAt - a.joinedAt)
+                .slice(0, 10);
+
+            let memberLog = recentMembers.map(m => 
+                `👤 ${m.user.tag} (${m.joinedAt?.toLocaleDateString() || 'Fecha desconocida'})`
+            ).join('\n');
+
+            embed.addFields({ name: '🆕 Últimos 10 miembros', value: memberLog || 'No hay datos' });
+
+            // Logs de entradas/salidas
+            if (membersHistory[guild.id]?.joins?.length > 0) {
+                const joins = membersHistory[guild.id].joins.slice(-10);
+                const joinLog = joins.map(t => 
+                    `📥 Entrada: ${new Date(t).toLocaleString()}`
+                ).join('\n');
+                embed.addFields({ name: '📥 Últimas entradas', value: joinLog });
+            }
+
+            await message.reply({ embeds: [embed] });
+
+        } catch (error) {
+            console.error('[!] Error en !logs:', error);
+            message.reply('❌ Error al obtener los logs.');
         }
     }
 });
@@ -269,24 +350,31 @@ client.on('interactionCreate', async (interaction) => {
 
     // ===== VERIFICACIÓN =====
     if (interaction.customId === 'verify_member' || interaction.customId === 'rules_accept') {
-        const role = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
-        if (role) {
-            try {
-                await interaction.member.roles.add(role);
+        try {
+            // Asignar rol de verificado
+            const verifiedRole = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
+            const userRole = interaction.guild.roles.cache.get(USER_ROLE_ID);
+            
+            if (verifiedRole) {
+                await interaction.member.roles.add(verifiedRole);
+                // Remover el rol de usuario no verificado si existe
+                if (userRole) {
+                    await interaction.member.roles.remove(userRole).catch(() => {});
+                }
                 await interaction.reply({
-                    content: '✅ ¡Te has verificado correctamente!',
+                    content: '✅ ¡Te has verificado correctamente! Ahora tienes acceso al servidor.',
                     ephemeral: true
                 });
-            } catch (error) {
-                console.error('[!] Error asignando rol:', error);
+            } else {
                 await interaction.reply({
-                    content: '❌ Error al asignar el rol. Asegúrate de que el bot tiene permisos de gestionar roles.',
+                    content: '❌ No se encontró el rol de verificado. Contacta con un administrador.',
                     ephemeral: true
                 });
             }
-        } else {
+        } catch (error) {
+            console.error('[!] Error asignando rol:', error);
             await interaction.reply({
-                content: '❌ No se encontró el rol de verificado. Contacta con un administrador.',
+                content: '❌ Error al asignar el rol. Asegúrate de que el bot tiene permisos de gestionar roles.',
                 ephemeral: true
             });
         }
@@ -404,6 +492,7 @@ client.on('interactionCreate', async (interaction) => {
 
 // ============ EVENTOS DE ENTRADA Y SALIDA ============
 client.on(Events.GuildMemberAdd, async (member) => {
+    // Anti-raid
     if (antiRaidEnabled) {
         const now = Date.now();
         const timeWindow = 60000;
@@ -424,6 +513,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
         }
     }
 
+    // Log de entrada
     if (joinLogChannel) {
         const channel = member.guild.channels.cache.get(joinLogChannel);
         if (channel) {
@@ -432,13 +522,51 @@ client.on(Events.GuildMemberAdd, async (member) => {
                 .setTitle('🟢 ENTRADA')
                 .setDescription(`**${member.user.tag}** ha entrado al servidor.`)
                 .addFields(
-                    { name: '👥 Miembros', value: `${member.guild.memberCount}`, inline: true }
+                    { name: '👥 Miembros', value: `${member.guild.memberCount}`, inline: true },
+                    { name: '📅 Cuenta creada', value: member.user.createdAt.toLocaleDateString(), inline: true }
                 )
                 .setThumbnail(member.user.displayAvatarURL())
                 .setTimestamp();
 
             channel.send({ embeds: [embed] });
         }
+    }
+
+    // Registrar invitación
+    try {
+        const invites = await member.guild.invites.fetch();
+        const cachedInvites = invitesData[member.guild.id] || {};
+        
+        for (const [code, invite] of invites) {
+            if (cachedInvites[code] !== undefined && invite.uses > cachedInvites[code]) {
+                const inviter = invite.inviter ? invite.inviter.username : 'Desconocido';
+                
+                if (!membersHistory[member.guild.id]) membersHistory[member.guild.id] = {};
+                if (!membersHistory[member.guild.id].invites) membersHistory[member.guild.id].invites = {};
+                if (!membersHistory[member.guild.id].invites[inviter]) {
+                    membersHistory[member.guild.id].invites[inviter] = 0;
+                }
+                membersHistory[member.guild.id].invites[inviter]++;
+                saveMembers();
+
+                if (joinLogChannel) {
+                    const channel = member.guild.channels.cache.get(joinLogChannel);
+                    if (channel) {
+                        channel.send(`📨 **${member.user.tag}** fue invitado por **${inviter}** (Código: ${code})`);
+                    }
+                }
+                break;
+            }
+        }
+
+        for (const [code, invite] of invites) {
+            cachedInvites[code] = invite.uses;
+        }
+        invitesData[member.guild.id] = cachedInvites;
+        saveInvites();
+
+    } catch (error) {
+        console.error('[!] Error registrando invitación:', error);
     }
 });
 
@@ -469,7 +597,7 @@ app.get('/health', (req, res) => {
         status: isReady ? 'online' : 'connecting',
         bot: client.user?.tag || 'offline',
         guilds: client.guilds.cache.size || 0,
-        role_id: ROLE_ID,
+        role_id: OWNER_ROLE_ID,
         anti_raid: antiRaidEnabled
     });
 });
@@ -481,7 +609,7 @@ app.get('/api/check-role/:userId', async (req, res) => {
         if (!guild) return res.status(500).json({ error: 'Bot no está en ningún servidor' });
         const member = await guild.members.fetch(userId);
         if (!member) return res.json({ hasRole: false });
-        res.json({ hasRole: member.roles.cache.has(ROLE_ID), username: member.user.username });
+        res.json({ hasRole: member.roles.cache.has(OWNER_ROLE_ID), username: member.user.username });
     } catch {
         res.json({ hasRole: false });
     }
