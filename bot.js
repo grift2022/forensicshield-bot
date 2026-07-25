@@ -1,4 +1,4 @@
-﻿const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, Events } = require('discord.js');
+﻿const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, Events, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -255,348 +255,416 @@ client.on('messageCreate', async (message) => {
         await sendLog(message.guild, `🛡️ ${message.author.tag} ${antiRaidEnabled ? 'activó' : 'desactivó'} Anti-Raid`, 0xFF9800);
     }
 
-    // ===== COMANDO: !anuncio (MEJORADO CON IMÁGENES Y FORMATO) =====
+    // ===== COMANDO: !anuncio (PANEL INTERACTIVO) =====
     if (command === 'anuncio') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
         }
 
-        if (args.length === 0) {
-            return message.reply(`❌ Uso correcto:
-\`!anuncio <mensaje>\` - Texto simple
-\`!anuncio -titulo "Título" -desc "Descripción" -color #e94560 -img URL\` - Formato avanzado
-
-**Ejemplos:**
-\`!anuncio -titulo "Nuevo evento" -desc "Evento este sábado" -img https://i.imgur.com/ejemplo.png\`
-\`!anuncio -titulo "Servidor" -desc "Mantenimiento" -color #4CAF50\`
-\`!anuncio "Texto simple sin formato"\``);
-        }
-
         try {
-            // ===== VARIABLES =====
-            let text = '';
-            let title = '';
-            let description = '';
-            let color = '#e94560';
-            let imageUrl = '';
-            let footer = '';
-            let author = '';
-            let thumbnail = '';
-            let fields = [];
-            let useEmbed = false;
-            let mentionEveryone = false;
+            // Eliminar mensaje del usuario
+            await message.delete().catch(() => {});
 
-            // ===== PARSEAR ARGUMENTOS =====
-            let fullText = message.content.slice(9).trim();
-            let isAdvanced = fullText.includes('-titulo') || fullText.includes('-desc') || fullText.includes('-img') || fullText.includes('-color');
+            // ===== CREAR PANEL (MODAL) =====
+            const modal = new ModalBuilder()
+                .setCustomId('anuncio_modal')
+                .setTitle('📢 Crear Anuncio');
 
-            if (isAdvanced) {
-                useEmbed = true;
-                
-                // Extraer -titulo
-                let match = fullText.match(/-titulo\s+"([^"]*)"/);
-                if (match) { title = match[1]; fullText = fullText.replace(match[0], ''); }
+            // Título
+            const titleInput = new TextInputBuilder()
+                .setCustomId('anuncio_titulo')
+                .setLabel('📌 Título (opcional)')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Ej: Nuevo evento en el servidor')
+                .setRequired(false)
+                .setMaxLength(100);
 
-                // Extraer -desc
-                match = fullText.match(/-desc\s+"([^"]*)"/);
-                if (match) { description = match[1]; fullText = fullText.replace(match[0], ''); }
+            // Descripción
+            const descInput = new TextInputBuilder()
+                .setCustomId('anuncio_desc')
+                .setLabel('📝 Descripción')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('Escribe el contenido del anuncio...')
+                .setRequired(true)
+                .setMaxLength(4000);
 
-                // Extraer -img
-                match = fullText.match(/-img\s+(\S+)/);
-                if (match) { imageUrl = match[1]; fullText = fullText.replace(match[0], ''); }
+            // Imagen URL
+            const imgInput = new TextInputBuilder()
+                .setCustomId('anuncio_img')
+                .setLabel('🖼️ URL de imagen (opcional)')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('https://i.imgur.com/ejemplo.png')
+                .setRequired(false)
+                .setMaxLength(200);
 
-                // Extraer -thumbnail
-                match = fullText.match(/-thumbnail\s+(\S+)/);
-                if (match) { thumbnail = match[1]; fullText = fullText.replace(match[0], ''); }
+            // Color
+            const colorInput = new TextInputBuilder()
+                .setCustomId('anuncio_color')
+                .setLabel('🎨 Color (#hex)')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('#e94560')
+                .setRequired(false)
+                .setMaxLength(7);
 
-                // Extraer -color
-                match = fullText.match(/-color\s+(\#[0-9a-fA-F]{6})/);
-                if (match) { color = match[1]; fullText = fullText.replace(match[0], ''); }
+            // Footer
+            const footerInput = new TextInputBuilder()
+                .setCustomId('anuncio_footer')
+                .setLabel('📌 Pie de página (opcional)')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('Equipo ForensicShield')
+                .setRequired(false)
+                .setMaxLength(50);
 
-                // Extraer -footer
-                match = fullText.match(/-footer\s+"([^"]*)"/);
-                if (match) { footer = match[1]; fullText = fullText.replace(match[0], ''); }
+            // Añadir campos al modal
+            const row1 = new ActionRowBuilder().addComponents(titleInput);
+            const row2 = new ActionRowBuilder().addComponents(descInput);
+            const row3 = new ActionRowBuilder().addComponents(imgInput);
+            const row4 = new ActionRowBuilder().addComponents(colorInput);
+            const row5 = new ActionRowBuilder().addComponents(footerInput);
 
-                // Extraer -author
-                match = fullText.match(/-author\s+"([^"]*)"/);
-                if (match) { author = match[1]; fullText = fullText.replace(match[0], ''); }
+            modal.addComponents(row1, row2, row3, row4, row5);
 
-                // Extraer -everyone
-                if (fullText.includes('-everyone')) {
-                    mentionEveryone = true;
-                    fullText = fullText.replace('-everyone', '');
-                }
+            // Mostrar modal
+            await message.author.send({ 
+                content: '📢 Abre el panel de anuncios haciendo clic en el botón de abajo:',
+                components: [
+                    new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('abrir_anuncio')
+                            .setLabel('📢 Crear Anuncio')
+                            .setStyle(ButtonStyle.Primary)
+                    )
+                ]
+            });
 
-                // Extraer campos -field "Nombre" "Valor"
-                const fieldMatches = fullText.match(/-field\s+"([^"]*)"\s+"([^"]*)"/g);
-                if (fieldMatches) {
-                    for (const fm of fieldMatches) {
-                        const parts = fm.match(/-field\s+"([^"]*)"\s+"([^"]*)"/);
-                        if (parts) {
-                            fields.push({ name: parts[1], value: parts[2], inline: false });
-                        }
-                    }
-                    for (const fm of fieldMatches) {
-                        fullText = fullText.replace(fm, '');
-                    }
-                }
-
-                // Extraer campos inline -fieldi "Nombre" "Valor"
-                const fieldiMatches = fullText.match(/-fieldi\s+"([^"]*)"\s+"([^"]*)"/g);
-                if (fieldiMatches) {
-                    for (const fm of fieldiMatches) {
-                        const parts = fm.match(/-fieldi\s+"([^"]*)"\s+"([^"]*)"/);
-                        if (parts) {
-                            fields.push({ name: parts[1], value: parts[2], inline: true });
-                        }
-                    }
-                    for (const fm of fieldiMatches) {
-                        fullText = fullText.replace(fm, '');
-                    }
-                }
-
-                text = fullText.trim();
-                if (text === '' && !title && !description) {
-                    return message.reply('❌ Debes incluir al menos un título, descripción o texto.');
-                }
-            } else {
-                text = fullText.trim();
-                if (!text) {
-                    return message.reply('❌ Uso correcto: `!anuncio <mensaje>`');
-                }
-            }
-
-            // ===== ELIMINAR MENSAJE DEL USUARIO =====
-            try { await message.delete(); } catch (e) {}
-
-            // ===== CONSTRUIR EMBED O MENSAJE SIMPLE =====
-            if (useEmbed) {
-                const embed = new EmbedBuilder()
-                    .setColor(color)
-                    .setTimestamp();
-
-                if (title) embed.setTitle(title);
-                if (description) embed.setDescription(description);
-                if (author) embed.setAuthor({ name: author, iconURL: message.author.displayAvatarURL() });
-                if (footer) embed.setFooter({ text: footer, iconURL: message.guild?.iconURL() });
-                if (imageUrl) embed.setImage(imageUrl);
-                if (thumbnail) embed.setThumbnail(thumbnail);
-
-                for (const field of fields) {
-                    embed.addFields({ name: field.name, value: field.value, inline: field.inline || false });
-                }
-
-                if (text && !description) {
-                    embed.setDescription(text);
-                } else if (text && description) {
-                    embed.addFields({ name: '📌 Información adicional', value: text, inline: false });
-                }
-
-                if (!author) {
-                    embed.setAuthor({ 
-                        name: message.author.username, 
-                        iconURL: message.author.displayAvatarURL() 
-                    });
-                }
-
-                const content = mentionEveryone ? '@everyone' : '';
-                await message.channel.send({
-                    content: content,
-                    embeds: [embed]
-                });
-
-            } else {
-                await message.channel.send(text);
-            }
-
-            await sendLog(message.guild, `📢 ${message.author.tag} envió un anuncio`, 0xFF9800);
+            // Enviar mensaje en el canal indicando que se ha enviado un DM
+            const dmMsg = await message.channel.send(`📢 ${message.author}, revisa tu **mensaje directo** para crear el anuncio.`);
+            setTimeout(() => dmMsg.delete().catch(() => {}), 5000);
 
         } catch (error) {
             console.error('[!] Error en !anuncio:', error);
-            message.reply('❌ Error al enviar el anuncio. Verifica que la URL de la imagen sea válida.');
+            message.reply('❌ Error al abrir el panel de anuncios. Asegúrate de tener los DMs abiertos.');
         }
     }
 });
 
 // ============ INTERACCIONES ============
 client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
+    if (interaction.isButton()) {
+        
+        // ===== BOTÓN PARA ABRIR MODAL DE ANUNCIO =====
+        if (interaction.customId === 'abrir_anuncio') {
+            try {
+                const modal = new ModalBuilder()
+                    .setCustomId('anuncio_modal')
+                    .setTitle('📢 Crear Anuncio');
 
-    // ===== VERIFICACIÓN =====
-    if (interaction.customId === 'verify_member' || interaction.customId === 'rules_accept') {
-        try {
-            const verifiedRole = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
-            const userRole = interaction.guild.roles.cache.get(USER_ROLE_ID);
-            
-            if (verifiedRole) {
-                if (userRole) {
-                    await interaction.member.roles.remove(userRole).catch(() => {});
-                }
-                await interaction.member.roles.add(verifiedRole);
+                const titleInput = new TextInputBuilder()
+                    .setCustomId('anuncio_titulo')
+                    .setLabel('📌 Título (opcional)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('Ej: Nuevo evento en el servidor')
+                    .setRequired(false)
+                    .setMaxLength(100);
+
+                const descInput = new TextInputBuilder()
+                    .setCustomId('anuncio_desc')
+                    .setLabel('📝 Descripción')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Escribe el contenido del anuncio...')
+                    .setRequired(true)
+                    .setMaxLength(4000);
+
+                const imgInput = new TextInputBuilder()
+                    .setCustomId('anuncio_img')
+                    .setLabel('🖼️ URL de imagen (opcional)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('https://i.imgur.com/ejemplo.png')
+                    .setRequired(false)
+                    .setMaxLength(200);
+
+                const colorInput = new TextInputBuilder()
+                    .setCustomId('anuncio_color')
+                    .setLabel('🎨 Color (#hex)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('#e94560')
+                    .setRequired(false)
+                    .setMaxLength(7);
+
+                const footerInput = new TextInputBuilder()
+                    .setCustomId('anuncio_footer')
+                    .setLabel('📌 Pie de página (opcional)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('Equipo ForensicShield')
+                    .setRequired(false)
+                    .setMaxLength(50);
+
+                const row1 = new ActionRowBuilder().addComponents(titleInput);
+                const row2 = new ActionRowBuilder().addComponents(descInput);
+                const row3 = new ActionRowBuilder().addComponents(imgInput);
+                const row4 = new ActionRowBuilder().addComponents(colorInput);
+                const row5 = new ActionRowBuilder().addComponents(footerInput);
+
+                modal.addComponents(row1, row2, row3, row4, row5);
+
+                await interaction.showModal(modal);
+
+            } catch (error) {
+                console.error('[!] Error abriendo modal:', error);
                 await interaction.reply({
-                    content: '✅ ¡Te has verificado correctamente!',
-                    ephemeral: true
-                });
-                await sendLog(interaction.guild, `✅ ${interaction.user.tag} se ha verificado (User → Verified)`, 0x4CAF50);
-            } else {
-                await interaction.reply({
-                    content: '❌ No se encontró el rol de verificado. Contacta con un administrador.',
+                    content: '❌ Error al abrir el panel.',
                     ephemeral: true
                 });
             }
-        } catch (error) {
-            console.error('[!] Error asignando rol:', error);
-            await interaction.reply({
-                content: '❌ Error al asignar el rol.',
-                ephemeral: true
-            });
         }
-    }
 
-    // ===== CREAR TICKET =====
-    if (interaction.customId === 'create_ticket') {
-        try {
-            const guild = interaction.guild;
-            const existingChannel = guild.channels.cache.find(
-                ch => ch.name === `ticket-${interaction.user.id}` && ch.parent?.name === 'Tickets'
-            );
-
-            if (existingChannel) {
-                return interaction.reply({
-                    content: '⚠️ Ya tienes un ticket abierto: <#' + existingChannel.id + '>',
+        // ===== VERIFICACIÓN =====
+        if (interaction.customId === 'verify_member' || interaction.customId === 'rules_accept') {
+            try {
+                const verifiedRole = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
+                const userRole = interaction.guild.roles.cache.get(USER_ROLE_ID);
+                
+                if (verifiedRole) {
+                    if (userRole) {
+                        await interaction.member.roles.remove(userRole).catch(() => {});
+                    }
+                    await interaction.member.roles.add(verifiedRole);
+                    await interaction.reply({
+                        content: '✅ ¡Te has verificado correctamente!',
+                        ephemeral: true
+                    });
+                    await sendLog(interaction.guild, `✅ ${interaction.user.tag} se ha verificado (User → Verified)`, 0x4CAF50);
+                } else {
+                    await interaction.reply({
+                        content: '❌ No se encontró el rol de verificado. Contacta con un administrador.',
+                        ephemeral: true
+                    });
+                }
+            } catch (error) {
+                console.error('[!] Error asignando rol:', error);
+                await interaction.reply({
+                    content: '❌ Error al asignar el rol.',
                     ephemeral: true
                 });
             }
+        }
 
-            let category = guild.channels.cache.find(ch => ch.name === 'Tickets' && ch.type === ChannelType.GuildCategory);
-            if (!category) {
-                category = await guild.channels.create({
-                    name: 'Tickets',
-                    type: ChannelType.GuildCategory,
+        // ===== CREAR TICKET =====
+        if (interaction.customId === 'create_ticket') {
+            try {
+                const guild = interaction.guild;
+                const existingChannel = guild.channels.cache.find(
+                    ch => ch.name === `ticket-${interaction.user.id}` && ch.parent?.name === 'Tickets'
+                );
+
+                if (existingChannel) {
+                    return interaction.reply({
+                        content: '⚠️ Ya tienes un ticket abierto: <#' + existingChannel.id + '>',
+                        ephemeral: true
+                    });
+                }
+
+                let category = guild.channels.cache.find(ch => ch.name === 'Tickets' && ch.type === ChannelType.GuildCategory);
+                if (!category) {
+                    category = await guild.channels.create({
+                        name: 'Tickets',
+                        type: ChannelType.GuildCategory,
+                        permissionOverwrites: [
+                            { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                            { id: OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+                            { id: ADMIN_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+                        ]
+                    });
+                }
+
+                const channel = await guild.channels.create({
+                    name: `ticket-${interaction.user.id}`,
+                    type: ChannelType.GuildText,
+                    parent: category.id,
                     permissionOverwrites: [
                         { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
                         { id: OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
                         { id: ADMIN_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
                     ]
                 });
+
+                const embed = new EmbedBuilder()
+                    .setColor(0x5865F2)
+                    .setTitle('🎫 Nuevo Ticket')
+                    .setDescription(`Bienvenido ${interaction.user}, un administrador te atenderá pronto.`)
+                    .setTimestamp();
+
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('claim_ticket')
+                            .setLabel('📌 Reclamar Ticket')
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId('close_ticket')
+                            .setLabel('🔒 Cerrar Ticket')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                await channel.send({
+                    content: `<@${interaction.user.id}> <@&${OWNER_ROLE_ID}> <@&${ADMIN_ROLE_ID}>`,
+                    embeds: [embed],
+                    components: [row]
+                });
+
+                await interaction.reply({
+                    content: `✅ Ticket creado: <#${channel.id}>`,
+                    ephemeral: true
+                });
+                await sendLog(interaction.guild, `🎫 ${interaction.user.tag} abrió un ticket`, 0x5865F2);
+
+            } catch (error) {
+                console.error('[!] Error creando ticket:', error);
+                await interaction.reply({
+                    content: '❌ Error al crear el ticket.',
+                    ephemeral: true
+                });
+            }
+        }
+
+        // ===== RECLAMAR TICKET =====
+        if (interaction.customId === 'claim_ticket') {
+            try {
+                const hasRole = interaction.member.roles.cache.has(OWNER_ROLE_ID) || 
+                                interaction.member.roles.cache.has(ADMIN_ROLE_ID);
+
+                if (!hasRole) {
+                    return interaction.reply({
+                        content: '❌ Solo administradores pueden reclamar tickets.',
+                        ephemeral: true
+                    });
+                }
+
+                await interaction.reply({
+                    content: `📌 **${interaction.user.tag}** ha reclamado este ticket.`,
+                    ephemeral: false
+                });
+
+                const newName = `reclamado-${interaction.channel.name.replace('ticket-', '')}`;
+                await interaction.channel.setName(newName).catch(() => {});
+
+                await sendLog(interaction.guild, `📌 ${interaction.user.tag} reclamó el ticket ${interaction.channel.name}`, 0xFF9800);
+
+            } catch (error) {
+                console.error('[!] Error reclamando ticket:', error);
+                await interaction.reply({
+                    content: '❌ Error al reclamar el ticket.',
+                    ephemeral: true
+                });
+            }
+        }
+
+        // ===== CERRAR TICKET =====
+        if (interaction.customId === 'close_ticket') {
+            try {
+                const hasRole = interaction.member.roles.cache.has(OWNER_ROLE_ID) || 
+                                interaction.member.roles.cache.has(ADMIN_ROLE_ID);
+
+                if (!hasRole) {
+                    return interaction.reply({
+                        content: '❌ Solo administradores pueden cerrar tickets.',
+                        ephemeral: true
+                    });
+                }
+
+                await sendTicketTranscript(interaction.channel, interaction.user.tag);
+
+                await interaction.reply({
+                    content: '⚠️ El ticket se cerrará en 5 segundos...',
+                    ephemeral: false
+                });
+
+                setTimeout(async () => {
+                    try {
+                        await interaction.channel.delete();
+                        await sendLog(interaction.guild, `🔒 ${interaction.user.tag} cerró un ticket`, 0xF44336);
+                    } catch (error) {
+                        console.error('[!] Error eliminando canal:', error);
+                    }
+                }, 5000);
+
+            } catch (error) {
+                console.error('[!] Error cerrando ticket:', error);
+                await interaction.reply({
+                    content: '❌ Error al cerrar el ticket.',
+                    ephemeral: true
+                });
+            }
+        }
+    }
+
+    // ===== MODAL DE ANUNCIO =====
+    if (interaction.isModalSubmit() && interaction.customId === 'anuncio_modal') {
+        try {
+            // Obtener valores del modal
+            const title = interaction.fields.getTextInputValue('anuncio_titulo') || '';
+            const description = interaction.fields.getTextInputValue('anuncio_desc');
+            const imageUrl = interaction.fields.getTextInputValue('anuncio_img') || '';
+            const color = interaction.fields.getTextInputValue('anuncio_color') || '#e94560';
+            const footer = interaction.fields.getTextInputValue('anuncio_footer') || '';
+
+            // Validar que haya descripción
+            if (!description || description.trim() === '') {
+                return interaction.reply({
+                    content: '❌ Debes escribir una descripción para el anuncio.',
+                    ephemeral: true
+                });
             }
 
-            const channel = await guild.channels.create({
-                name: `ticket-${interaction.user.id}`,
-                type: ChannelType.GuildText,
-                parent: category.id,
-                permissionOverwrites: [
-                    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                    { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-                    { id: OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-                    { id: ADMIN_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
-                ]
-            });
+            // Validar color
+            const colorRegex = /^#[0-9a-fA-F]{6}$/;
+            const finalColor = colorRegex.test(color) ? color : '#e94560';
 
+            // ===== CONSTRUIR ANUNCIO =====
             const embed = new EmbedBuilder()
-                .setColor(0x5865F2)
-                .setTitle('🎫 Nuevo Ticket')
-                .setDescription(`Bienvenido ${interaction.user}, un administrador te atenderá pronto.`)
+                .setColor(finalColor)
                 .setTimestamp();
 
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('claim_ticket')
-                        .setLabel('📌 Reclamar Ticket')
-                        .setStyle(ButtonStyle.Success),
-                    new ButtonBuilder()
-                        .setCustomId('close_ticket')
-                        .setLabel('🔒 Cerrar Ticket')
-                        .setStyle(ButtonStyle.Danger)
-                );
+            if (title) embed.setTitle(title);
+            embed.setDescription(description);
 
-            await channel.send({
-                content: `<@${interaction.user.id}> <@&${OWNER_ROLE_ID}> <@&${ADMIN_ROLE_ID}>`,
-                embeds: [embed],
-                components: [row]
+            // Autor (quien envió el anuncio)
+            embed.setAuthor({
+                name: interaction.user.username,
+                iconURL: interaction.user.displayAvatarURL()
             });
 
-            await interaction.reply({
-                content: `✅ Ticket creado: <#${channel.id}>`,
-                ephemeral: true
-            });
-            await sendLog(interaction.guild, `🎫 ${interaction.user.tag} abrió un ticket`, 0x5865F2);
-
-        } catch (error) {
-            console.error('[!] Error creando ticket:', error);
-            await interaction.reply({
-                content: '❌ Error al crear el ticket.',
-                ephemeral: true
-            });
-        }
-    }
-
-    // ===== RECLAMAR TICKET =====
-    if (interaction.customId === 'claim_ticket') {
-        try {
-            const hasRole = interaction.member.roles.cache.has(OWNER_ROLE_ID) || 
-                            interaction.member.roles.cache.has(ADMIN_ROLE_ID);
-
-            if (!hasRole) {
-                return interaction.reply({
-                    content: '❌ Solo administradores pueden reclamar tickets.',
-                    ephemeral: true
-                });
-            }
-
-            await interaction.reply({
-                content: `📌 **${interaction.user.tag}** ha reclamado este ticket.`,
-                ephemeral: false
-            });
-
-            const newName = `reclamado-${interaction.channel.name.replace('ticket-', '')}`;
-            await interaction.channel.setName(newName).catch(() => {});
-
-            await sendLog(interaction.guild, `📌 ${interaction.user.tag} reclamó el ticket ${interaction.channel.name}`, 0xFF9800);
-
-        } catch (error) {
-            console.error('[!] Error reclamando ticket:', error);
-            await interaction.reply({
-                content: '❌ Error al reclamar el ticket.',
-                ephemeral: true
-            });
-        }
-    }
-
-    // ===== CERRAR TICKET =====
-    if (interaction.customId === 'close_ticket') {
-        try {
-            const hasRole = interaction.member.roles.cache.has(OWNER_ROLE_ID) || 
-                            interaction.member.roles.cache.has(ADMIN_ROLE_ID);
-
-            if (!hasRole) {
-                return interaction.reply({
-                    content: '❌ Solo administradores pueden cerrar tickets.',
-                    ephemeral: true
-                });
-            }
-
-            await sendTicketTranscript(interaction.channel, interaction.user.tag);
-
-            await interaction.reply({
-                content: '⚠️ El ticket se cerrará en 5 segundos...',
-                ephemeral: false
-            });
-
-            setTimeout(async () => {
+            // Imagen
+            if (imageUrl && imageUrl.trim() !== '') {
                 try {
-                    await interaction.channel.delete();
-                    await sendLog(interaction.guild, `🔒 ${interaction.user.tag} cerró un ticket`, 0xF44336);
-                } catch (error) {
-                    console.error('[!] Error eliminando canal:', error);
-                }
-            }, 5000);
+                    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+                        embed.setImage(imageUrl);
+                    }
+                } catch (e) { /* ignorar */ }
+            }
+
+            // Footer
+            if (footer) {
+                embed.setFooter({ text: footer });
+            }
+
+            // ===== ENVIAR ANUNCIO =====
+            await interaction.channel.send({ embeds: [embed] });
+
+            // Respuesta al usuario
+            await interaction.reply({
+                content: '✅ Anuncio enviado correctamente.',
+                ephemeral: true
+            });
+
+            // Log
+            await sendLog(interaction.guild, `📢 ${interaction.user.tag} envió un anuncio`, 0xFF9800);
 
         } catch (error) {
-            console.error('[!] Error cerrando ticket:', error);
+            console.error('[!] Error en modal de anuncio:', error);
             await interaction.reply({
-                content: '❌ Error al cerrar el ticket.',
+                content: '❌ Error al enviar el anuncio. Verifica que la URL de la imagen sea válida.',
                 ephemeral: true
             });
         }
