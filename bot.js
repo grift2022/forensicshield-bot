@@ -13,7 +13,6 @@ const USER_ROLE_ID = '1530313975361703978';
 const LOG_CHANNEL_ID = '1530329506445918400';
 const JOIN_CHANNEL_ID = '1530329911741649018';
 const TICKET_TRANSCRIPT_CHANNEL_ID = '1530516098749956167';
-const ANNOUNCE_CHANNEL_ID = '1521135511052353556'; // <-- CAMBIA ESTO
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 10000;
@@ -124,21 +123,6 @@ async function sendTicketTranscript(channel, closer) {
     }
 }
 
-// ============ FUNCIÓN PARA OBTENER EL CANAL DE ANUNCIOS ============
-function getAnnounceChannel(guild) {
-    let channel = guild.channels.cache.get(ANNOUNCE_CHANNEL_ID);
-    if (!channel) {
-        channel = guild.channels.cache.find(
-            ch => ch.name === 'anuncios' || 
-                  ch.name === 'anuncios-generales' || 
-                  ch.name === '📢-anuncios' ||
-                  ch.name === 'anuncios-oficiales' ||
-                  ch.name === 'comunicados'
-        );
-    }
-    return channel;
-}
-
 // ============ FUNCIÓN PARA SELECCIONAR GANADORES ============
 function selectWinners(participants, winnersCount) {
     const shuffled = [...participants];
@@ -238,7 +222,6 @@ client.once('ready', () => {
     console.log(`[✅] Log Channel: ${LOG_CHANNEL_ID}`);
     console.log(`[✅] Join Channel: ${JOIN_CHANNEL_ID}`);
     console.log(`[✅] Transcript Channel: ${TICKET_TRANSCRIPT_CHANNEL_ID}`);
-    console.log(`[✅] Announce Channel: ${ANNOUNCE_CHANNEL_ID}`);
     
     client.guilds.cache.forEach(guild => {
         console.log(`[📁] Servidor: ${guild.name} (ID: ${guild.id})`);
@@ -254,13 +237,6 @@ client.once('ready', () => {
         saveInvites();
         saveVerification();
         saveGiveaways();
-        
-        const announceChannel = getAnnounceChannel(guild);
-        if (announceChannel) {
-            console.log(`[✅] Canal de anuncios encontrado: #${announceChannel.name}`);
-        } else {
-            console.log(`[⚠️] No se encontró canal de anuncios en ${guild.name}`);
-        }
         
         sendLog(guild, '🟢 **Bot iniciado y listo para funcionar**', 0x4CAF50);
     });
@@ -377,7 +353,7 @@ client.on('messageCreate', async (message) => {
         await sendLog(message.guild, `🛡️ ${message.author.tag} ${antiRaidEnabled ? 'activó' : 'desactivó'} Anti-Raid`, 0xFF9800);
     }
 
-    // ===== COMANDO: !anuncio =====
+    // ===== COMANDO: !anuncio (MODAL DIRECTO EN EL CANAL) =====
     if (command === 'anuncio') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
@@ -386,16 +362,12 @@ client.on('messageCreate', async (message) => {
         try {
             await message.delete().catch(() => {});
 
-            const announceChannel = getAnnounceChannel(message.guild);
-            if (!announceChannel) {
-                await message.channel.send('⚠️ **No se encontró un canal de anuncios.**\nCrea un canal llamado `anuncios` o configura el ID en el bot.');
-                return;
-            }
-
+            // ===== CREAR MODAL =====
             const modal = new ModalBuilder()
                 .setCustomId('anuncio_modal')
                 .setTitle('📢 Crear Anuncio');
 
+            // Título
             const titleInput = new TextInputBuilder()
                 .setCustomId('anuncio_titulo')
                 .setLabel('📌 Título (opcional)')
@@ -404,6 +376,7 @@ client.on('messageCreate', async (message) => {
                 .setRequired(false)
                 .setMaxLength(100);
 
+            // Descripción
             const descInput = new TextInputBuilder()
                 .setCustomId('anuncio_desc')
                 .setLabel('📝 Descripción')
@@ -412,6 +385,7 @@ client.on('messageCreate', async (message) => {
                 .setRequired(true)
                 .setMaxLength(4000);
 
+            // Imagen URL
             const imgInput = new TextInputBuilder()
                 .setCustomId('anuncio_img')
                 .setLabel('🖼️ URL de imagen (opcional)')
@@ -420,6 +394,7 @@ client.on('messageCreate', async (message) => {
                 .setRequired(false)
                 .setMaxLength(200);
 
+            // Color
             const colorInput = new TextInputBuilder()
                 .setCustomId('anuncio_color')
                 .setLabel('🎨 Color (#hex)')
@@ -428,6 +403,7 @@ client.on('messageCreate', async (message) => {
                 .setRequired(false)
                 .setMaxLength(7);
 
+            // Footer
             const footerInput = new TextInputBuilder()
                 .setCustomId('anuncio_footer')
                 .setLabel('📌 Pie de página (opcional)')
@@ -444,11 +420,14 @@ client.on('messageCreate', async (message) => {
 
             modal.addComponents(row1, row2, row3, row4, row5);
 
-            if (!global.announceTargets) global.announceTargets = new Map();
-            global.announceTargets.set(message.author.id, announceChannel.id);
+            // Mostrar el modal directamente en el canal
+            await message.channel.send({
+                content: `📢 ${message.author}, abre el panel de anuncios:`
+            });
 
+            // Enviar el modal al usuario que usó el comando
             await message.author.send({
-                content: `📢 **Panel de Anuncios**\nEl anuncio se publicará en: <#${announceChannel.id}>\n\nHaz clic en el botón para crear tu anuncio:`,
+                content: `📢 **Panel de Anuncios**\nCompleta los campos para crear tu anuncio:\n\nEl anuncio se publicará en este canal: <#${message.channel.id}>`,
                 components: [
                     new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
@@ -459,12 +438,11 @@ client.on('messageCreate', async (message) => {
                 ]
             });
 
-            const msg = await message.channel.send({
-                content: `📢 ${message.author}, revisa tu **mensaje directo** para crear el anuncio. Se publicará en <#${announceChannel.id}>.`
-            });
-            setTimeout(() => msg.delete().catch(() => {}), 8000);
+            // Mensaje de confirmación
+            const msg = await message.channel.send(`📢 ${message.author}, revisa tu **mensaje directo** para crear el anuncio.`);
+            setTimeout(() => msg.delete().catch(() => {}), 5000);
 
-            await sendLog(message.guild, `📢 ${message.author.tag} abrió el panel de anuncios (Canal: ${announceChannel.name})`, 0x5865F2);
+            await sendLog(message.guild, `📢 ${message.author.tag} abrió el panel de anuncios`, 0x5865F2);
 
         } catch (error) {
             console.error('[!] Error en !anuncio:', error);
@@ -476,7 +454,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ===== COMANDO: !sorteo =====
+    // ===== COMANDO: !sorteo (MODAL DIRECTO EN EL CANAL) =====
     if (command === 'sorteo') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
@@ -484,12 +462,6 @@ client.on('messageCreate', async (message) => {
 
         try {
             await message.delete().catch(() => {});
-
-            const announceChannel = getAnnounceChannel(message.guild);
-            if (!announceChannel) {
-                await message.channel.send('⚠️ **No se encontró un canal de anuncios.**\nCrea un canal llamado `anuncios` o configura el ID en el bot.');
-                return;
-            }
 
             // ===== CREAR MODAL PARA SORTEO =====
             const modal = new ModalBuilder()
@@ -559,13 +531,14 @@ client.on('messageCreate', async (message) => {
 
             modal.addComponents(row1, row2, row3, row4, row5, row6);
 
-            // Guardar el canal de destino
-            if (!global.sorteoTargets) global.sorteoTargets = new Map();
-            global.sorteoTargets.set(message.author.id, announceChannel.id);
+            // Mostrar mensaje en el canal
+            await message.channel.send({
+                content: `🎉 ${message.author}, abre el panel de sorteo:`
+            });
 
-            // Enviar DM con el botón para abrir el modal
+            // Enviar el modal al usuario que usó el comando
             await message.author.send({
-                content: `🎉 **Panel de Sorteo**\nEl sorteo se publicará en: <#${announceChannel.id}>\n\nHaz clic en el botón para crear el sorteo:`,
+                content: `🎉 **Panel de Sorteo**\nCompleta los campos para crear tu sorteo:\n\nEl sorteo se publicará en este canal: <#${message.channel.id}>`,
                 components: [
                     new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
@@ -576,12 +549,11 @@ client.on('messageCreate', async (message) => {
                 ]
             });
 
-            const msg = await message.channel.send({
-                content: `🎉 ${message.author}, revisa tu **mensaje directo** para crear el sorteo. Se publicará en <#${announceChannel.id}>.`
-            });
-            setTimeout(() => msg.delete().catch(() => {}), 8000);
+            // Mensaje de confirmación
+            const msg = await message.channel.send(`🎉 ${message.author}, revisa tu **mensaje directo** para crear el sorteo.`);
+            setTimeout(() => msg.delete().catch(() => {}), 5000);
 
-            await sendLog(message.guild, `🎉 ${message.author.tag} abrió el panel de sorteo (Canal: ${announceChannel.name})`, 0x5865F2);
+            await sendLog(message.guild, `🎉 ${message.author.tag} abrió el panel de sorteo`, 0x5865F2);
 
         } catch (error) {
             console.error('[!] Error en !sorteo:', error);
@@ -656,9 +628,9 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.showModal(modal);
 
             } catch (error) {
-                console.error('[!] Error abriendo modal:', error);
+                console.error('[!] Error abriendo modal de anuncio:', error);
                 await interaction.reply({
-                    content: '❌ Error al abrir el panel.',
+                    content: '❌ Error al abrir el panel de anuncios.',
                     ephemeral: true
                 }).catch(() => {});
             }
@@ -1052,33 +1024,19 @@ client.on('interactionCreate', async (interaction) => {
                 embed.setFooter({ text: footer });
             }
 
-            let announceChannel = null;
-            
-            if (global.announceTargets && global.announceTargets.has(interaction.user.id)) {
-                const channelId = global.announceTargets.get(interaction.user.id);
-                announceChannel = interaction.guild.channels.cache.get(channelId);
-                global.announceTargets.delete(interaction.user.id);
-            }
-            
-            if (!announceChannel) {
-                announceChannel = getAnnounceChannel(interaction.guild);
-            }
-
-            if (!announceChannel) {
-                announceChannel = interaction.channel;
-            }
-
-            await announceChannel.send({ 
+            // Enviar al mismo canal donde se usó el comando
+            const channel = interaction.channel;
+            await channel.send({ 
                 content: `@everyone 📢 **NUEVO ANUNCIO**`, 
                 embeds: [embed] 
             });
 
             await interaction.reply({
-                content: `✅ Anuncio enviado correctamente a <#${announceChannel.id}>`,
+                content: `✅ Anuncio enviado correctamente a <#${channel.id}>`,
                 ephemeral: true
             });
 
-            await sendLog(interaction.guild, `📢 ${interaction.user.tag} envió un anuncio a <#${announceChannel.id}>`, 0xFF9800);
+            await sendLog(interaction.guild, `📢 ${interaction.user.tag} envió un anuncio a <#${channel.id}>`, 0xFF9800);
 
         } catch (error) {
             console.error('[!] Error en modal de anuncio:', error);
@@ -1132,22 +1090,8 @@ client.on('interactionCreate', async (interaction) => {
             const colorRegex = /^#[0-9a-fA-F]{6}$/;
             const finalColor = colorRegex.test(color) ? color : '#e94560';
 
-            // Buscar canal de anuncios
-            let announceChannel = null;
-            
-            if (global.sorteoTargets && global.sorteoTargets.has(interaction.user.id)) {
-                const channelId = global.sorteoTargets.get(interaction.user.id);
-                announceChannel = interaction.guild.channels.cache.get(channelId);
-                global.sorteoTargets.delete(interaction.user.id);
-            }
-            
-            if (!announceChannel) {
-                announceChannel = getAnnounceChannel(interaction.guild);
-            }
-
-            if (!announceChannel) {
-                announceChannel = interaction.channel;
-            }
+            // El canal es donde se usó el comando
+            const channel = interaction.channel;
 
             // Generar ID único para el sorteo
             const giveawayId = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
@@ -1195,8 +1139,8 @@ client.on('interactionCreate', async (interaction) => {
                         .setStyle(ButtonStyle.Danger)
                 );
 
-            // Enviar mensaje del sorteo
-            const message = await announceChannel.send({
+            // Enviar mensaje del sorteo en el mismo canal
+            const message = await channel.send({
                 content: `🎉 **NUEVO SORTEO** 🎉\nParticipa haciendo clic en el botón de abajo.`,
                 embeds: [embed],
                 components: [row]
@@ -1213,7 +1157,7 @@ client.on('interactionCreate', async (interaction) => {
                 winnersCount: winnersCount,
                 durationHours: durationHours,
                 endTime: endTime.toISOString(),
-                channelId: announceChannel.id,
+                channelId: channel.id,
                 messageId: message.id,
                 participants: [],
                 ended: false,
@@ -1227,11 +1171,10 @@ client.on('interactionCreate', async (interaction) => {
                 try {
                     const giveaway = giveawaysData[interaction.guildId]?.[giveawayId];
                     if (giveaway && !giveaway.ended) {
-                        const channel = await client.channels.fetch(giveaway.channelId).catch(() => null);
-                        if (channel) {
-                            const msg = await channel.messages.fetch(giveaway.messageId).catch(() => null);
+                        const ch = await client.channels.fetch(giveaway.channelId).catch(() => null);
+                        if (ch) {
+                            const msg = await ch.messages.fetch(giveaway.messageId).catch(() => null);
                             if (msg) {
-                                // Crear una interacción falsa para finalizar
                                 const fakeInteraction = {
                                     guildId: interaction.guildId,
                                     guild: interaction.guild,
@@ -1250,7 +1193,7 @@ client.on('interactionCreate', async (interaction) => {
 
             // Respuesta al usuario
             await interaction.reply({
-                content: `✅ **Sorteo creado correctamente!**\n📌 Título: ${title}\n👥 Ganadores: ${winnersCount}\n⏱️ Finaliza: <t:${endTimestamp}:R>\n📢 Publicado en: <#${announceChannel.id}>`,
+                content: `✅ **Sorteo creado correctamente!**\n📌 Título: ${title}\n👥 Ganadores: ${winnersCount}\n⏱️ Finaliza: <t:${endTimestamp}:R>\n📢 Publicado en: <#${channel.id}>`,
                 ephemeral: true
             });
 
