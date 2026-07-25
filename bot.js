@@ -6,8 +6,13 @@ const path = require('path');
 // ============ CONFIGURACIÓN DE ROLES ============
 const OWNER_ROLE_ID = '1200562213195362375';
 const ADMIN_ROLE_ID = '1530314208229458102';
-const VERIFIED_ROLE_ID = '1530261559429955725'; // Comprado/Verificado
-const USER_ROLE_ID = '1530313975361703978';     // User/No verificado
+const VERIFIED_ROLE_ID = '1530261559429955725';
+const USER_ROLE_ID = '1530313975361703978';
+
+// ============ CANALES ============
+const LOG_CHANNEL_ID = '1530329506445918400'; // Logs del bot
+const JOIN_CHANNEL_ID = '1530329911741649018'; // Entradas
+const TICKET_TRANSCRIPT_CHANNEL_ID = '1530516098749956167'; // Transcripciones de tickets
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 10000;
@@ -53,12 +58,63 @@ const client = new Client({
 
 let isReady = false;
 let antiRaidEnabled = false;
-let joinLogChannel = null;
-let leaveLogChannel = null;
 
-// ============ FUNCIÓN PARA VERIFICAR PERMISOS ============
 function hasPermission(member) {
     return member.roles.cache.has(OWNER_ROLE_ID) || member.roles.cache.has(ADMIN_ROLE_ID);
+}
+
+// ============ FUNCIÓN PARA ENVIAR LOGS ============
+async function sendLog(guild, message, color = 0x5865F2) {
+    const logChannel = guild.channels.cache.get(LOG_CHANNEL_ID);
+    if (logChannel) {
+        const embed = new EmbedBuilder()
+            .setColor(color)
+            .setDescription(message)
+            .setTimestamp();
+        await logChannel.send({ embeds: [embed] }).catch(() => {});
+    }
+}
+
+// ============ FUNCIÓN PARA ENVIAR TRANSCRIPCIÓN DE TICKET ============
+async function sendTicketTranscript(channel, closer) {
+    const guild = channel.guild;
+    const transcriptChannel = guild.channels.cache.get(TICKET_TRANSCRIPT_CHANNEL_ID);
+    if (!transcriptChannel) return;
+
+    try {
+        // Obtener mensajes del ticket
+        const messages = await channel.messages.fetch({ limit: 100 });
+        const transcript = messages.reverse().map(m => 
+            `[${m.createdAt.toLocaleString()}] ${m.author.tag}: ${m.content || '(Embed o archivo)'}`
+        ).join('\n');
+
+        const embed = new EmbedBuilder()
+            .setColor(0xF44336)
+            .setTitle('📋 TRANSCRIPCIÓN DE TICKET')
+            .addFields(
+                { name: '👤 Usuario', value: `<@${channel.name.replace('ticket-', '')}>`, inline: true },
+                { name: '🔒 Cerrado por', value: closer, inline: true },
+                { name: '📅 Fecha', value: new Date().toLocaleString(), inline: true },
+                { name: '📝 Mensajes', value: `${messages.size} mensajes` }
+            )
+            .setTimestamp();
+
+        await transcriptChannel.send({ embeds: [embed] });
+        
+        // Enviar el transcript como archivo si es muy largo
+        if (transcript.length > 1000) {
+            const buffer = Buffer.from(transcript, 'utf-8');
+            await transcriptChannel.send({
+                files: [{
+                    attachment: buffer,
+                    name: `transcript-${channel.name}.txt`
+                }]
+            });
+        }
+
+    } catch (error) {
+        console.error('[!] Error enviando transcript:', error);
+    }
 }
 
 client.once('ready', () => {
@@ -69,6 +125,9 @@ client.once('ready', () => {
     console.log(`[✅] Admin Role ID: ${ADMIN_ROLE_ID}`);
     console.log(`[✅] Verified Role ID: ${VERIFIED_ROLE_ID}`);
     console.log(`[✅] User Role ID: ${USER_ROLE_ID}`);
+    console.log(`[✅] Log Channel: ${LOG_CHANNEL_ID}`);
+    console.log(`[✅] Join Channel: ${JOIN_CHANNEL_ID}`);
+    console.log(`[✅] Transcript Channel: ${TICKET_TRANSCRIPT_CHANNEL_ID}`);
     
     client.guilds.cache.forEach(guild => {
         console.log(`[📁] Servidor: ${guild.name} (ID: ${guild.id})`);
@@ -80,6 +139,7 @@ client.once('ready', () => {
         }
         saveInvites();
         saveVerification();
+        sendLog(guild, '🟢 **Bot iniciado y listo para funcionar**', 0x4CAF50);
     });
 });
 
@@ -106,53 +166,18 @@ client.on('messageCreate', async (message) => {
         response += `• Verificado: ${isVerified ? '✅ Sí' : '❌ No'}`;
         
         message.reply(response);
-    }
-
-    // ===== COMANDO: !invitaciones (público) =====
-    if (command === 'invitaciones' || command === 'invites') {
-        try {
-            const guild = message.guild;
-            const invites = await guild.invites.fetch();
-            
-            if (invites.size === 0) {
-                return message.reply('📊 No hay invitaciones activas en este servidor.');
-            }
-
-            const embed = new EmbedBuilder()
-                .setColor(0x4CAF50)
-                .setTitle('📊 RANKING DE INVITACIONES')
-                .setTimestamp();
-
-            let description = '';
-            const sortedInvites = invites.sort((a, b) => b.uses - a.uses);
-            
-            sortedInvites.forEach((invite, index) => {
-                const inviter = invite.inviter ? invite.inviter.username : 'Desconocido';
-                const uses = invite.uses || 0;
-                
-                description += `**#${index + 1}** 👤 ${inviter} → ${uses} usos\n`;
-            });
-
-            embed.setDescription(description || 'No hay invitaciones activas.');
-            await message.reply({ embeds: [embed] });
-
-        } catch (error) {
-            console.error('[!] Error en !invitaciones:', error);
-            message.reply('❌ Error al obtener las invitaciones.');
-        }
+        await sendLog(message.guild, `📋 ${message.author.tag} usó !verificar`, 0x5865F2);
     }
 
     // ===== COMANDO: !verificacion (público, UNA SOLA VEZ) =====
     if (command === 'verificacion' || command === 'verificación') {
         const guildId = message.guild.id;
         
-        // Verificar si ya se envió el mensaje de verificación en este servidor
         if (verificationData[guildId]?.sent) {
-            return message.reply('⚠️ El mensaje de verificación ya ha sido enviado en este servidor. Si necesitas reenviarlo, contacta con un administrador.');
+            return message.reply('⚠️ El mensaje de verificación ya ha sido enviado en este servidor.');
         }
 
         try {
-            // Eliminar el mensaje del usuario
             await message.delete().catch(() => {});
 
             const embed = new EmbedBuilder()
@@ -173,14 +198,10 @@ client.on('messageCreate', async (message) => {
                         .setStyle(ButtonStyle.Success)
                 );
 
-            await message.channel.send({
-                embeds: [embed],
-                components: [row]
-            });
-
-            // Marcar como enviado
+            await message.channel.send({ embeds: [embed], components: [row] });
             verificationData[guildId] = { sent: true };
             saveVerification();
+            await sendLog(message.guild, `📋 ${message.author.tag} creó el panel de verificación`, 0x4CAF50);
 
         } catch (error) {
             console.error('[!] Error en !verificacion:', error);
@@ -202,6 +223,7 @@ client.on('messageCreate', async (message) => {
         try {
             await message.channel.send(text);
             try { await message.delete(); } catch (e) {}
+            await sendLog(message.guild, `📢 ${message.author.tag} envió un anuncio: ${text.substring(0, 100)}`, 0xFF9800);
         } catch (error) {
             console.error('[!] Error en !anuncio:', error);
             message.reply('❌ Error al enviar el anuncio.');
@@ -231,10 +253,8 @@ client.on('messageCreate', async (message) => {
                         .setStyle(ButtonStyle.Primary)
                 );
 
-            await message.channel.send({
-                embeds: [embed],
-                components: [row]
-            });
+            await message.channel.send({ embeds: [embed], components: [row] });
+            await sendLog(message.guild, `🎫 ${message.author.tag} creó el panel de tickets`, 0x5865F2);
 
         } catch (error) {
             console.error('[!] Error en !ticket:', error);
@@ -250,97 +270,7 @@ client.on('messageCreate', async (message) => {
 
         antiRaidEnabled = !antiRaidEnabled;
         message.channel.send(antiRaidEnabled ? '🛡️ **Anti-Raid ACTIVADO**' : '🛡️ **Anti-Raid DESACTIVADO**');
-    }
-
-    // ===== COMANDO: !llegadas (solo Owner) =====
-    if (command === 'llegadas') {
-        if (!hasPermission(message.member)) {
-            return message.reply('❌ No tienes permiso para usar este comando.');
-        }
-
-        try {
-            try { await message.delete(); } catch (e) {}
-
-            // Usar el canal donde se ejecutó el comando
-            const channel = message.channel;
-            joinLogChannel = channel.id;
-            leaveLogChannel = channel.id;
-
-            const embed = new EmbedBuilder()
-                .setColor(0x2196F3)
-                .setTitle('📋 SISTEMA DE ENTRADAS Y SALIDAS ACTIVADO')
-                .setDescription(`Se mostrarán en <#${channel.id}> las entradas y salidas de miembros.`)
-                .setTimestamp();
-
-            await message.channel.send({ embeds: [embed] });
-
-        } catch (error) {
-            console.error('[!] Error en !llegadas:', error);
-            message.reply('❌ Error al activar el sistema de logs.');
-        }
-    }
-
-    // ===== COMANDO: !logs (solo Owner) =====
-    if (command === 'logs' || command === 'log') {
-        if (!hasPermission(message.member)) {
-            return message.reply('❌ No tienes permiso para usar este comando.');
-        }
-
-        try {
-            const guild = message.guild;
-            
-            // Obtener todos los logs del servidor
-            const embed = new EmbedBuilder()
-                .setColor(0x5865F2)
-                .setTitle('📋 LOGS DEL SERVIDOR')
-                .setDescription(`Logs disponibles para ${guild.name}`)
-                .addFields(
-                    { name: '👥 Miembros', value: `${guild.memberCount}`, inline: true },
-                    { name: '📁 Canales', value: `${guild.channels.cache.size}`, inline: true },
-                    { name: '🎭 Roles', value: `${guild.roles.cache.size}`, inline: true }
-                )
-                .setTimestamp();
-
-            // Logs de invitaciones
-            let inviteLog = 'No hay invitaciones activas.';
-            const invites = await guild.invites.fetch();
-            if (invites.size > 0) {
-                const sorted = invites.sort((a, b) => b.uses - a.uses);
-                inviteLog = sorted.map((inv, i) => 
-                    `**#${i+1}** ${inv.inviter?.username || 'Desconocido'} → ${inv.uses} usos`
-                ).join('\n');
-                if (inviteLog.length > 1000) inviteLog = inviteLog.substring(0, 1000) + '...';
-            }
-
-            embed.addFields({ name: '📊 Invitaciones', value: inviteLog });
-
-            // Logs de miembros recientes
-            const members = await guild.members.fetch();
-            const recentMembers = members
-                .sort((a, b) => b.joinedAt - a.joinedAt)
-                .slice(0, 10);
-
-            let memberLog = recentMembers.map(m => 
-                `👤 ${m.user.tag} (${m.joinedAt?.toLocaleDateString() || 'Fecha desconocida'})`
-            ).join('\n');
-
-            embed.addFields({ name: '🆕 Últimos 10 miembros', value: memberLog || 'No hay datos' });
-
-            // Logs de entradas/salidas
-            if (membersHistory[guild.id]?.joins?.length > 0) {
-                const joins = membersHistory[guild.id].joins.slice(-10);
-                const joinLog = joins.map(t => 
-                    `📥 Entrada: ${new Date(t).toLocaleString()}`
-                ).join('\n');
-                embed.addFields({ name: '📥 Últimas entradas', value: joinLog });
-            }
-
-            await message.reply({ embeds: [embed] });
-
-        } catch (error) {
-            console.error('[!] Error en !logs:', error);
-            message.reply('❌ Error al obtener los logs.');
-        }
+        await sendLog(message.guild, `🛡️ ${message.author.tag} ${antiRaidEnabled ? 'activó' : 'desactivó'} Anti-Raid`, 0xFF9800);
     }
 });
 
@@ -351,20 +281,19 @@ client.on('interactionCreate', async (interaction) => {
     // ===== VERIFICACIÓN =====
     if (interaction.customId === 'verify_member' || interaction.customId === 'rules_accept') {
         try {
-            // Asignar rol de verificado
             const verifiedRole = interaction.guild.roles.cache.get(VERIFIED_ROLE_ID);
             const userRole = interaction.guild.roles.cache.get(USER_ROLE_ID);
             
             if (verifiedRole) {
                 await interaction.member.roles.add(verifiedRole);
-                // Remover el rol de usuario no verificado si existe
                 if (userRole) {
                     await interaction.member.roles.remove(userRole).catch(() => {});
                 }
                 await interaction.reply({
-                    content: '✅ ¡Te has verificado correctamente! Ahora tienes acceso al servidor.',
+                    content: '✅ ¡Te has verificado correctamente!',
                     ephemeral: true
                 });
+                await sendLog(interaction.guild, `✅ ${interaction.user.tag} se ha verificado`, 0x4CAF50);
             } else {
                 await interaction.reply({
                     content: '❌ No se encontró el rol de verificado. Contacta con un administrador.',
@@ -374,7 +303,7 @@ client.on('interactionCreate', async (interaction) => {
         } catch (error) {
             console.error('[!] Error asignando rol:', error);
             await interaction.reply({
-                content: '❌ Error al asignar el rol. Asegúrate de que el bot tiene permisos de gestionar roles.',
+                content: '❌ Error al asignar el rol.',
                 ephemeral: true
             });
         }
@@ -429,6 +358,10 @@ client.on('interactionCreate', async (interaction) => {
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
+                        .setCustomId('claim_ticket')
+                        .setLabel('📌 Reclamar Ticket')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
                         .setCustomId('close_ticket')
                         .setLabel('🔒 Cerrar Ticket')
                         .setStyle(ButtonStyle.Danger)
@@ -441,14 +374,46 @@ client.on('interactionCreate', async (interaction) => {
             });
 
             await interaction.reply({
-                content: `✅ Ticket creado correctamente: <#${channel.id}>`,
+                content: `✅ Ticket creado: <#${channel.id}>`,
                 ephemeral: true
             });
 
         } catch (error) {
             console.error('[!] Error creando ticket:', error);
             await interaction.reply({
-                content: '❌ Error al crear el ticket. Asegúrate de que el bot tiene permisos de gestionar canales.',
+                content: '❌ Error al crear el ticket.',
+                ephemeral: true
+            });
+        }
+    }
+
+    // ===== RECLAMAR TICKET =====
+    if (interaction.customId === 'claim_ticket') {
+        try {
+            const hasRole = interaction.member.roles.cache.has(OWNER_ROLE_ID) || 
+                            interaction.member.roles.cache.has(ADMIN_ROLE_ID);
+
+            if (!hasRole) {
+                return interaction.reply({
+                    content: '❌ Solo administradores pueden reclamar tickets.',
+                    ephemeral: true
+                });
+            }
+
+            await interaction.reply({
+                content: `📌 **${interaction.user.tag}** ha reclamado este ticket.`,
+                ephemeral: false
+            });
+
+            // Cambiar el nombre del canal para indicar que está reclamado
+            await interaction.channel.setName(`reclamado-${interaction.channel.name.replace('ticket-', '')}`);
+
+            await sendLog(interaction.guild, `📌 ${interaction.user.tag} reclamó el ticket ${interaction.channel.name}`, 0xFF9800);
+
+        } catch (error) {
+            console.error('[!] Error reclamando ticket:', error);
+            await interaction.reply({
+                content: '❌ Error al reclamar el ticket.',
                 ephemeral: true
             });
         }
@@ -457,15 +422,18 @@ client.on('interactionCreate', async (interaction) => {
     // ===== CERRAR TICKET =====
     if (interaction.customId === 'close_ticket') {
         try {
-            const isOwner = interaction.channel.name === `ticket-${interaction.user.id}`;
-            const hasRole = interaction.member.roles.cache.has(OWNER_ROLE_ID) || interaction.member.roles.cache.has(ADMIN_ROLE_ID);
+            const hasRole = interaction.member.roles.cache.has(OWNER_ROLE_ID) || 
+                            interaction.member.roles.cache.has(ADMIN_ROLE_ID);
 
-            if (!isOwner && !hasRole) {
+            if (!hasRole) {
                 return interaction.reply({
-                    content: '❌ No tienes permiso para cerrar este ticket.',
+                    content: '❌ Solo administradores pueden cerrar tickets.',
                     ephemeral: true
                 });
             }
+
+            // Enviar transcript antes de cerrar
+            await sendTicketTranscript(interaction.channel, interaction.user.tag);
 
             await interaction.reply({
                 content: '⚠️ El ticket se cerrará en 5 segundos...',
@@ -475,6 +443,7 @@ client.on('interactionCreate', async (interaction) => {
             setTimeout(async () => {
                 try {
                     await interaction.channel.delete();
+                    await sendLog(interaction.guild, `🔒 ${interaction.user.tag} cerró un ticket`, 0xF44336);
                 } catch (error) {
                     console.error('[!] Error eliminando canal:', error);
                 }
@@ -492,6 +461,17 @@ client.on('interactionCreate', async (interaction) => {
 
 // ============ EVENTOS DE ENTRADA Y SALIDA ============
 client.on(Events.GuildMemberAdd, async (member) => {
+    // Asignar rol de usuario
+    try {
+        const userRole = member.guild.roles.cache.get(USER_ROLE_ID);
+        if (userRole) {
+            await member.roles.add(userRole);
+            await sendLog(member.guild, `👤 ${member.user.tag} recibió el rol User`, 0x4CAF50);
+        }
+    } catch (error) {
+        console.error('[!] Error asignando rol de usuario:', error);
+    }
+
     // Anti-raid
     if (antiRaidEnabled) {
         const now = Date.now();
@@ -506,87 +486,106 @@ client.on(Events.GuildMemberAdd, async (member) => {
         saveMembers();
 
         if (recent.length > maxJoins) {
-            const channel = member.guild.channels.cache.find(ch => ch.name === 'logs-entradas-salidas') || member.guild.systemChannel;
+            const channel = member.guild.channels.cache.get(JOIN_CHANNEL_ID) || member.guild.systemChannel;
             if (channel) {
                 channel.send(`🛡️ **ALERTA DE RAID**\n${recent.length} usuarios en 1 minuto.\n<@&${ADMIN_ROLE_ID}> <@&${OWNER_ROLE_ID}>`);
+                await sendLog(member.guild, `🛡️ Alerta de raid: ${recent.length} usuarios en 1 minuto`, 0xF44336);
             }
         }
     }
 
-    // Log de entrada
-    if (joinLogChannel) {
-        const channel = member.guild.channels.cache.get(joinLogChannel);
-        if (channel) {
-            const embed = new EmbedBuilder()
-                .setColor(0x4CAF50)
-                .setTitle('🟢 ENTRADA')
-                .setDescription(`**${member.user.tag}** ha entrado al servidor.`)
-                .addFields(
-                    { name: '👥 Miembros', value: `${member.guild.memberCount}`, inline: true },
-                    { name: '📅 Cuenta creada', value: member.user.createdAt.toLocaleDateString(), inline: true }
-                )
-                .setThumbnail(member.user.displayAvatarURL())
-                .setTimestamp();
-
-            channel.send({ embeds: [embed] });
-        }
-    }
-
-    // Registrar invitación
+    // Registrar entrada y quién invitó
     try {
         const invites = await member.guild.invites.fetch();
         const cachedInvites = invitesData[member.guild.id] || {};
-        
+        let inviterName = 'Desconocido';
+        let found = false;
+
         for (const [code, invite] of invites) {
             if (cachedInvites[code] !== undefined && invite.uses > cachedInvites[code]) {
-                const inviter = invite.inviter ? invite.inviter.username : 'Desconocido';
+                inviterName = invite.inviter ? invite.inviter.tag : 'Desconocido';
+                found = true;
                 
+                // Guardar estadísticas de invitaciones
                 if (!membersHistory[member.guild.id]) membersHistory[member.guild.id] = {};
                 if (!membersHistory[member.guild.id].invites) membersHistory[member.guild.id].invites = {};
-                if (!membersHistory[member.guild.id].invites[inviter]) {
-                    membersHistory[member.guild.id].invites[inviter] = 0;
+                if (!membersHistory[member.guild.id].invites[inviterName]) {
+                    membersHistory[member.guild.id].invites[inviterName] = 0;
                 }
-                membersHistory[member.guild.id].invites[inviter]++;
+                membersHistory[member.guild.id].invites[inviterName]++;
                 saveMembers();
-
-                if (joinLogChannel) {
-                    const channel = member.guild.channels.cache.get(joinLogChannel);
-                    if (channel) {
-                        channel.send(`📨 **${member.user.tag}** fue invitado por **${inviter}** (Código: ${code})`);
-                    }
-                }
                 break;
             }
         }
 
+        // Si no se encontró, intentar con la caché de invitaciones del sistema
+        if (!found) {
+            try {
+                // Verificar si hay alguna invitación creada por algún miembro
+                for (const [code, invite] of invites) {
+                    if (invite.uses > 0) {
+                        inviterName = invite.inviter ? invite.inviter.tag : 'Desconocido';
+                        break;
+                    }
+                }
+            } catch (e) {}
+        }
+
+        // Actualizar caché de invitaciones
         for (const [code, invite] of invites) {
             cachedInvites[code] = invite.uses;
         }
         invitesData[member.guild.id] = cachedInvites;
         saveInvites();
 
-    } catch (error) {
-        console.error('[!] Error registrando invitación:', error);
-    }
-});
+        // Obtener total de invitaciones del usuario
+        const totalInvites = membersHistory[member.guild.id]?.invites?.[inviterName] || 0;
 
-client.on(Events.GuildMemberRemove, async (member) => {
-    if (leaveLogChannel) {
-        const channel = member.guild.channels.cache.get(leaveLogChannel);
-        if (channel) {
+        // Enviar mensaje en el canal de entradas
+        const joinChannel = member.guild.channels.cache.get(JOIN_CHANNEL_ID);
+        if (joinChannel) {
             const embed = new EmbedBuilder()
-                .setColor(0xF44336)
-                .setTitle('🔴 SALIDA')
-                .setDescription(`**${member.user.tag}** ha salido del servidor.`)
+                .setColor(0x4CAF50)
+                .setTitle('🟢 NUEVO MIEMBRO')
+                .setDescription(`**${member.user.tag}** ha entrado al servidor.`)
                 .addFields(
+                    { name: '👤 Invitado por', value: inviterName, inline: true },
+                    { name: '📊 Invitaciones totales', value: `${totalInvites}`, inline: true },
                     { name: '👥 Miembros', value: `${member.guild.memberCount}`, inline: true }
                 )
                 .setThumbnail(member.user.displayAvatarURL())
                 .setTimestamp();
 
-            channel.send({ embeds: [embed] });
+            await joinChannel.send({ embeds: [embed] });
+        }
+
+        await sendLog(member.guild, `🟢 ${member.user.tag} entró al servidor (Invitado por: ${inviterName})`, 0x4CAF50);
+
+    } catch (error) {
+        console.error('[!] Error registrando entrada:', error);
+        const joinChannel = member.guild.channels.cache.get(JOIN_CHANNEL_ID);
+        if (joinChannel) {
+            joinChannel.send(`🟢 **${member.user.tag}** ha entrado al servidor.`);
         }
     }
+});
+
+client.on(Events.GuildMemberRemove, async (member) => {
+    const joinChannel = member.guild.channels.cache.get(JOIN_CHANNEL_ID);
+    if (joinChannel) {
+        const embed = new EmbedBuilder()
+            .setColor(0xF44336)
+            .setTitle('🔴 SALIDA')
+            .setDescription(`**${member.user.tag}** ha salido del servidor.`)
+            .addFields(
+                { name: '👥 Miembros', value: `${member.guild.memberCount}`, inline: true }
+            )
+            .setThumbnail(member.user.displayAvatarURL())
+            .setTimestamp();
+
+        await joinChannel.send({ embeds: [embed] });
+    }
+    await sendLog(member.guild, `🔴 ${member.user.tag} salió del servidor`, 0xF44336);
 });
 
 // ============ API ============
