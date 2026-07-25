@@ -93,11 +93,9 @@ async function sendTicketTranscript(channel, closer) {
     }
 
     try {
-        // Obtener todos los mensajes del ticket
         const messages = await channel.messages.fetch({ limit: 150 });
         const userId = channel.name.replace('ticket-', '').replace('reclamado-', '');
         
-        // Construir la transcripción en texto
         let transcriptText = `═══════════════════════════════════════\n`;
         transcriptText += `📋 TRANSCRIPCIÓN DE TICKET\n`;
         transcriptText += `═══════════════════════════════════════\n`;
@@ -107,7 +105,6 @@ async function sendTicketTranscript(channel, closer) {
         transcriptText += `📝 Mensajes: ${messages.size}\n`;
         transcriptText += `═══════════════════════════════════════\n\n`;
 
-        // Agregar todos los mensajes con timestamp
         const messagesArray = messages.reverse();
         for (const msg of messagesArray) {
             const timestamp = msg.createdAt.toLocaleString();
@@ -115,7 +112,6 @@ async function sendTicketTranscript(channel, closer) {
             const content = msg.content || '(Embed o archivo)';
             transcriptText += `[${timestamp}] ${author}: ${content}\n`;
             
-            // Si tiene archivos adjuntos
             if (msg.attachments.size > 0) {
                 for (const [_, attachment] of msg.attachments) {
                     transcriptText += `  📎 ${attachment.name}: ${attachment.url}\n`;
@@ -127,11 +123,9 @@ async function sendTicketTranscript(channel, closer) {
         transcriptText += `📋 FIN DE LA TRANSCRIPCIÓN\n`;
         transcriptText += `═══════════════════════════════════════\n`;
 
-        // Crear el archivo de transcripción
         const buffer = Buffer.from(transcriptText, 'utf-8');
         const fileName = `transcript-${channel.name}-${Date.now()}.txt`;
 
-        // Crear embed con la información de la transcripción
         const embed = new EmbedBuilder()
             .setColor(0x5865F2)
             .setTitle('📋 TRANSCRIPCIÓN DE TICKET')
@@ -144,26 +138,19 @@ async function sendTicketTranscript(channel, closer) {
             )
             .setTimestamp();
 
-        // Botón para descargar la transcripción
+        const transcriptId = `transcript_${channel.id}_${Date.now()}`;
+        if (!global.transcripts) global.transcripts = new Map();
+        global.transcripts.set(transcriptId, transcriptText);
+
         const row = new ActionRowBuilder()
             .addComponents(
                 new ButtonBuilder()
-                    .setCustomId(`download_transcript_${channel.id}_${Date.now()}`)
+                    .setCustomId(`descargar_transcript_${transcriptId}`)
                     .setLabel('📥 Descargar Transcripción')
                     .setStyle(ButtonStyle.Primary)
                     .setEmoji('📥')
             );
 
-        // Guardar la transcripción en memoria para descarga
-        const transcriptId = `transcript_${channel.id}_${Date.now()}`;
-        if (!global.transcripts) global.transcripts = new Map();
-        global.transcripts.set(transcriptId, transcriptText);
-
-        // Guardar el ID del canal para asociarlo
-        if (!global.transcriptChannels) global.transcriptChannels = new Map();
-        global.transcriptChannels.set(transcriptId, channel.id);
-
-        // Enviar al canal de transcripciones con el embed y el botón
         await transcriptChannel.send({
             content: `📋 **Nueva transcripción de ticket**\nTicket: #${channel.name}`,
             embeds: [embed],
@@ -422,7 +409,7 @@ client.on('messageCreate', async (message) => {
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId('abrir_anuncio_directo')
+                        .setCustomId('abrir_anuncio')
                         .setLabel('📢 Crear Anuncio')
                         .setStyle(ButtonStyle.Primary)
                 );
@@ -485,32 +472,10 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton()) {
         
         // ===== BOTÓN PARA DESCARGAR TRANSCRIPCIÓN =====
-        if (interaction.customId.startsWith('download_transcript_')) {
+        if (interaction.customId.startsWith('descargar_transcript_')) {
             try {
-                // Buscar la transcripción en el Map
-                let transcriptText = null;
-                let transcriptKey = null;
-
-                for (const [key, value] of global.transcripts || new Map()) {
-                    // Buscar por el ID del canal en la clave
-                    if (key.includes(interaction.customId.split('_')[2])) {
-                        transcriptText = value;
-                        transcriptKey = key;
-                        break;
-                    }
-                }
-
-                // Si no se encuentra, buscar por el ID del canal
-                if (!transcriptText) {
-                    const channelId = interaction.customId.split('_')[2];
-                    for (const [key, value] of global.transcripts || new Map()) {
-                        if (key.includes(channelId)) {
-                            transcriptText = value;
-                            transcriptKey = key;
-                            break;
-                        }
-                    }
-                }
+                const transcriptId = interaction.customId.replace('descargar_transcript_', '');
+                const transcriptText = global.transcripts?.get(transcriptId);
 
                 if (!transcriptText) {
                     return interaction.reply({
@@ -531,10 +496,7 @@ client.on('interactionCreate', async (interaction) => {
                     ephemeral: true
                 });
 
-                // Eliminar la transcripción después de descargarla
-                if (transcriptKey && global.transcripts) {
-                    global.transcripts.delete(transcriptKey);
-                }
+                global.transcripts.delete(transcriptId);
 
             } catch (error) {
                 console.error('[!] Error descargando transcripción:', error);
@@ -546,7 +508,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         // ===== BOTÓN PARA ABRIR MODAL DE ANUNCIO =====
-        if (interaction.customId === 'abrir_anuncio_directo') {
+        if (interaction.customId === 'abrir_anuncio') {
             try {
                 const modal = new ModalBuilder()
                     .setCustomId('anuncio_modal')
@@ -929,7 +891,6 @@ client.on('interactionCreate', async (interaction) => {
                     });
                 }
 
-                // Enviar la transcripción al canal de transcripciones ANTES de cerrar
                 await sendTicketTranscript(interaction.channel, interaction.user.tag);
 
                 await interaction.reply({
@@ -1188,12 +1149,12 @@ client.on('interactionCreate', async (interaction) => {
 client.on(Events.GuildMemberAdd, async (member) => {
     console.log(`[LOG] ${member.user.tag} entró al servidor`);
 
+    // ===== ASIGNAR ROL USER =====
     try {
         const userRole = member.guild.roles.cache.get(USER_ROLE_ID);
         if (userRole) {
             await member.roles.add(userRole);
             console.log(`[✅] Rol User (${USER_ROLE_ID}) asignado a ${member.user.tag}`);
-            await sendLog(member.guild, `👤 ${member.user.tag} recibió el rol User`, 0x4CAF50);
         } else {
             console.log(`[!] Rol User (${USER_ROLE_ID}) no encontrado`);
         }
@@ -1201,6 +1162,44 @@ client.on(Events.GuildMemberAdd, async (member) => {
         console.error(`[!] Error asignando rol User a ${member.user.tag}:`, error);
     }
 
+    // ===== ENVIAR MENSAJE DE BIENVENIDA AL CANAL DE LLEGADAS (MENSAJE NORMAL) =====
+    const joinChannel = member.guild.channels.cache.get(JOIN_CHANNEL_ID);
+    if (joinChannel) {
+        try {
+            await joinChannel.send({
+                content: `🎉 **¡Bienvenido ${member} al servidor!**\n\n🔹 Somos **${member.guild.name}**, una comunidad de FiveM.\n🔹 Si necesitas ayuda, abre un ticket con \`!ticket\`.\n🔹 Respeta a los demás miembros y disfruta de la experiencia.`
+            });
+        } catch (error) {
+            console.error('[!] Error enviando mensaje de bienvenida al canal:', error);
+        }
+    }
+
+    // ===== ENVIAR DM DE BIENVENIDA AL USUARIO =====
+    try {
+        const welcomeEmbed = new EmbedBuilder()
+            .setColor(0x4CAF50)
+            .setTitle('🎉 ¡Bienvenido a ForensicShield!')
+            .setDescription(`Hola **${member.user.username}**, bienvenido a **${member.guild.name}**.`)
+            .addFields(
+                { name: '📋 Reglas básicas', value: '• Respeta a todos los miembros\n• No hagas spam\n• Sigue las instrucciones de los administradores', inline: false },
+                { name: '🔐 Verificación', value: 'Busca el mensaje de verificación en el servidor para obtener acceso completo.', inline: false },
+                { name: '🎫 Tickets', value: 'Si necesitas ayuda, abre un ticket con el comando `!ticket` en el chat.', inline: false },
+                { name: '📢 Anuncios', value: 'Mantente atento a los anuncios para no perderte eventos y novedades.', inline: false }
+            )
+            .setFooter({ text: 'ForensicShield - Tu seguridad es nuestra prioridad' })
+            .setTimestamp();
+
+        await member.send({ embeds: [welcomeEmbed] });
+        console.log(`[✅] DM de bienvenida enviado a ${member.user.tag}`);
+    } catch (error) {
+        if (error.code === 50007) {
+            console.log(`[!] No se pudo enviar DM a ${member.user.tag} (tiene DMs cerrados)`);
+        } else {
+            console.error(`[!] Error enviando DM a ${member.user.tag}:`, error);
+        }
+    }
+
+    // ===== ANTI-RAID =====
     if (antiRaidEnabled) {
         const now = Date.now();
         const timeWindow = 60000;
@@ -1222,6 +1221,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
         }
     }
 
+    // ===== REGISTRAR INVITACIÓN =====
     try {
         const invites = await member.guild.invites.fetch();
         const cachedInvites = invitesData[member.guild.id] || {};
@@ -1250,31 +1250,11 @@ client.on(Events.GuildMemberAdd, async (member) => {
 
         const totalInvites = membersHistory[member.guild.id]?.invites?.[inviterName] || 0;
 
-        const joinChannel = member.guild.channels.cache.get(JOIN_CHANNEL_ID);
-        if (joinChannel) {
-            const embed = new EmbedBuilder()
-                .setColor(0x4CAF50)
-                .setTitle('🟢 NUEVO MIEMBRO')
-                .setDescription(`**${member.user.tag}** ha entrado al servidor.`)
-                .addFields(
-                    { name: '👤 Invitado por', value: inviterName, inline: true },
-                    { name: '📊 Invitaciones totales', value: `${totalInvites}`, inline: true },
-                    { name: '👥 Miembros', value: `${member.guild.memberCount}`, inline: true }
-                )
-                .setThumbnail(member.user.displayAvatarURL())
-                .setTimestamp();
-
-            await joinChannel.send({ embeds: [embed] });
-        }
-
+        // Log de invitación en el canal de logs
         await sendLog(member.guild, `🟢 ${member.user.tag} entró (Invitado por: ${inviterName} - ${totalInvites} invitaciones)`, 0x4CAF50);
 
     } catch (error) {
         console.error('[!] Error registrando entrada:', error);
-        const joinChannel = member.guild.channels.cache.get(JOIN_CHANNEL_ID);
-        if (joinChannel) {
-            joinChannel.send(`🟢 **${member.user.tag}** ha entrado al servidor.`);
-        }
     }
 });
 
@@ -1283,17 +1263,11 @@ client.on(Events.GuildMemberRemove, async (member) => {
     
     const joinChannel = member.guild.channels.cache.get(JOIN_CHANNEL_ID);
     if (joinChannel) {
-        const embed = new EmbedBuilder()
-            .setColor(0xF44336)
-            .setTitle('🔴 SALIDA')
-            .setDescription(`**${member.user.tag}** ha salido del servidor.`)
-            .addFields(
-                { name: '👥 Miembros', value: `${member.guild.memberCount}`, inline: true }
-            )
-            .setThumbnail(member.user.displayAvatarURL())
-            .setTimestamp();
-
-        await joinChannel.send({ embeds: [embed] });
+        try {
+            await joinChannel.send(`👋 **${member.user.tag}** ha salido del servidor.`);
+        } catch (error) {
+            console.error('[!] Error enviando mensaje de salida:', error);
+        }
     }
     await sendLog(member.guild, `🔴 ${member.user.tag} salió del servidor`, 0xF44336);
 });
