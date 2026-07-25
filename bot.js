@@ -93,10 +93,11 @@ async function sendTicketTranscript(channel, closer) {
     }
 
     try {
+        // Obtener todos los mensajes del ticket
         const messages = await channel.messages.fetch({ limit: 150 });
         const userId = channel.name.replace('ticket-', '').replace('reclamado-', '');
         
-        // Construir la transcripción
+        // Construir la transcripción en texto
         let transcriptText = `═══════════════════════════════════════\n`;
         transcriptText += `📋 TRANSCRIPCIÓN DE TICKET\n`;
         transcriptText += `═══════════════════════════════════════\n`;
@@ -106,6 +107,7 @@ async function sendTicketTranscript(channel, closer) {
         transcriptText += `📝 Mensajes: ${messages.size}\n`;
         transcriptText += `═══════════════════════════════════════\n\n`;
 
+        // Agregar todos los mensajes con timestamp
         const messagesArray = messages.reverse();
         for (const msg of messagesArray) {
             const timestamp = msg.createdAt.toLocaleString();
@@ -113,6 +115,7 @@ async function sendTicketTranscript(channel, closer) {
             const content = msg.content || '(Embed o archivo)';
             transcriptText += `[${timestamp}] ${author}: ${content}\n`;
             
+            // Si tiene archivos adjuntos
             if (msg.attachments.size > 0) {
                 for (const [_, attachment] of msg.attachments) {
                     transcriptText += `  📎 ${attachment.name}: ${attachment.url}\n`;
@@ -128,7 +131,7 @@ async function sendTicketTranscript(channel, closer) {
         const buffer = Buffer.from(transcriptText, 'utf-8');
         const fileName = `transcript-${channel.name}-${Date.now()}.txt`;
 
-        // Crear embed con la transcripción
+        // Crear embed con la información de la transcripción
         const embed = new EmbedBuilder()
             .setColor(0x5865F2)
             .setTitle('📋 TRANSCRIPCIÓN DE TICKET')
@@ -141,17 +144,17 @@ async function sendTicketTranscript(channel, closer) {
             )
             .setTimestamp();
 
-        // Botón para descargar - USANDO UN CUSTOM_ID CORRECTO
+        // Botón para descargar la transcripción
         const row = new ActionRowBuilder()
             .addComponents(
                 new ButtonBuilder()
-                    .setCustomId(`descargar_transcript_${channel.id}_${Date.now()}`)
+                    .setCustomId(`download_transcript_${channel.id}_${Date.now()}`)
                     .setLabel('📥 Descargar Transcripción')
                     .setStyle(ButtonStyle.Primary)
                     .setEmoji('📥')
             );
 
-        // Guardar la transcripción en memoria con un ID único
+        // Guardar la transcripción en memoria para descarga
         const transcriptId = `transcript_${channel.id}_${Date.now()}`;
         if (!global.transcripts) global.transcripts = new Map();
         global.transcripts.set(transcriptId, transcriptText);
@@ -160,7 +163,7 @@ async function sendTicketTranscript(channel, closer) {
         if (!global.transcriptChannels) global.transcriptChannels = new Map();
         global.transcriptChannels.set(transcriptId, channel.id);
 
-        // Enviar al canal de transcripciones
+        // Enviar al canal de transcripciones con el embed y el botón
         await transcriptChannel.send({
             content: `📋 **Nueva transcripción de ticket**\nTicket: #${channel.name}`,
             embeds: [embed],
@@ -441,7 +444,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ===== COMANDO: !sorteo (CORREGIDO) =====
+    // ===== COMANDO: !sorteo =====
     if (command === 'sorteo') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
@@ -482,21 +485,22 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton()) {
         
         // ===== BOTÓN PARA DESCARGAR TRANSCRIPCIÓN =====
-        if (interaction.customId.startsWith('descargar_transcript_')) {
+        if (interaction.customId.startsWith('download_transcript_')) {
             try {
                 // Buscar la transcripción en el Map
                 let transcriptText = null;
                 let transcriptKey = null;
 
                 for (const [key, value] of global.transcripts || new Map()) {
-                    if (interaction.customId.includes(key.split('_')[2])) {
+                    // Buscar por el ID del canal en la clave
+                    if (key.includes(interaction.customId.split('_')[2])) {
                         transcriptText = value;
                         transcriptKey = key;
                         break;
                     }
                 }
 
-                // Si no se encuentra por el método anterior, buscar por el ID del canal
+                // Si no se encuentra, buscar por el ID del canal
                 if (!transcriptText) {
                     const channelId = interaction.customId.split('_')[2];
                     for (const [key, value] of global.transcripts || new Map()) {
@@ -607,7 +611,7 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // ===== BOTÓN PARA ABRIR MODAL DE SORTEO (CORREGIDO) =====
+        // ===== BOTÓN PARA ABRIR MODAL DE SORTEO =====
         if (interaction.customId === 'abrir_sorteo') {
             try {
                 const modal = new ModalBuilder()
@@ -925,7 +929,7 @@ client.on('interactionCreate', async (interaction) => {
                     });
                 }
 
-                // Enviar la transcripción ANTES de cerrar
+                // Enviar la transcripción al canal de transcripciones ANTES de cerrar
                 await sendTicketTranscript(interaction.channel, interaction.user.tag);
 
                 await interaction.reply({
