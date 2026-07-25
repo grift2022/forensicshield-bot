@@ -58,7 +58,10 @@ const client = new Client({
 
 let isReady = false;
 let antiRaidEnabled = false;
+let joinLogChannel = null;
+let leaveLogChannel = null;
 
+// ============ FUNCIÓN PARA VERIFICAR PERMISOS ============
 function hasPermission(member) {
     return member.roles.cache.has(OWNER_ROLE_ID) || member.roles.cache.has(ADMIN_ROLE_ID);
 }
@@ -209,28 +212,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ===== COMANDO: !anuncio (Owner y Admin) =====
-    if (command === 'anuncio') {
-        if (!hasPermission(message.member)) {
-            return message.reply('❌ No tienes permiso para usar este comando.');
-        }
-
-        const text = args.join(' ');
-        if (!text) {
-            return message.reply('❌ Uso correcto: `!anuncio <mensaje>`');
-        }
-
-        try {
-            await message.channel.send(text);
-            try { await message.delete(); } catch (e) {}
-            await sendLog(message.guild, `📢 ${message.author.tag} envió un anuncio: ${text.substring(0, 100)}`, 0xFF9800);
-        } catch (error) {
-            console.error('[!] Error en !anuncio:', error);
-            message.reply('❌ Error al enviar el anuncio.');
-        }
-    }
-
-    // ===== COMANDO: !ticket (Owner y Admin) =====
+    // ===== COMANDO: !ticket =====
     if (command === 'ticket') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
@@ -262,7 +244,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ===== COMANDO: !anti-raid (Owner y Admin) =====
+    // ===== COMANDO: !anti-raid =====
     if (command === 'anti-raid' || command === 'antiraid') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
@@ -272,9 +254,171 @@ client.on('messageCreate', async (message) => {
         message.channel.send(antiRaidEnabled ? '🛡️ **Anti-Raid ACTIVADO**' : '🛡️ **Anti-Raid DESACTIVADO**');
         await sendLog(message.guild, `🛡️ ${message.author.tag} ${antiRaidEnabled ? 'activó' : 'desactivó'} Anti-Raid`, 0xFF9800);
     }
+
+    // ===== COMANDO: !anuncio (MEJORADO CON IMÁGENES Y FORMATO) =====
+    if (command === 'anuncio') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
+        if (args.length === 0) {
+            return message.reply(`❌ Uso correcto:
+\`!anuncio <mensaje>\` - Texto simple
+\`!anuncio -titulo "Título" -desc "Descripción" -color #e94560 -img URL\` - Formato avanzado
+
+**Ejemplos:**
+\`!anuncio -titulo "Nuevo evento" -desc "Evento este sábado" -img https://i.imgur.com/ejemplo.png\`
+\`!anuncio -titulo "Servidor" -desc "Mantenimiento" -color #4CAF50\`
+\`!anuncio "Texto simple sin formato"\``);
+        }
+
+        try {
+            // ===== VARIABLES =====
+            let text = '';
+            let title = '';
+            let description = '';
+            let color = '#e94560';
+            let imageUrl = '';
+            let footer = '';
+            let author = '';
+            let thumbnail = '';
+            let fields = [];
+            let useEmbed = false;
+            let mentionEveryone = false;
+
+            // ===== PARSEAR ARGUMENTOS =====
+            let fullText = message.content.slice(9).trim();
+            let isAdvanced = fullText.includes('-titulo') || fullText.includes('-desc') || fullText.includes('-img') || fullText.includes('-color');
+
+            if (isAdvanced) {
+                useEmbed = true;
+                
+                // Extraer -titulo
+                let match = fullText.match(/-titulo\s+"([^"]*)"/);
+                if (match) { title = match[1]; fullText = fullText.replace(match[0], ''); }
+
+                // Extraer -desc
+                match = fullText.match(/-desc\s+"([^"]*)"/);
+                if (match) { description = match[1]; fullText = fullText.replace(match[0], ''); }
+
+                // Extraer -img
+                match = fullText.match(/-img\s+(\S+)/);
+                if (match) { imageUrl = match[1]; fullText = fullText.replace(match[0], ''); }
+
+                // Extraer -thumbnail
+                match = fullText.match(/-thumbnail\s+(\S+)/);
+                if (match) { thumbnail = match[1]; fullText = fullText.replace(match[0], ''); }
+
+                // Extraer -color
+                match = fullText.match(/-color\s+(\#[0-9a-fA-F]{6})/);
+                if (match) { color = match[1]; fullText = fullText.replace(match[0], ''); }
+
+                // Extraer -footer
+                match = fullText.match(/-footer\s+"([^"]*)"/);
+                if (match) { footer = match[1]; fullText = fullText.replace(match[0], ''); }
+
+                // Extraer -author
+                match = fullText.match(/-author\s+"([^"]*)"/);
+                if (match) { author = match[1]; fullText = fullText.replace(match[0], ''); }
+
+                // Extraer -everyone
+                if (fullText.includes('-everyone')) {
+                    mentionEveryone = true;
+                    fullText = fullText.replace('-everyone', '');
+                }
+
+                // Extraer campos -field "Nombre" "Valor"
+                const fieldMatches = fullText.match(/-field\s+"([^"]*)"\s+"([^"]*)"/g);
+                if (fieldMatches) {
+                    for (const fm of fieldMatches) {
+                        const parts = fm.match(/-field\s+"([^"]*)"\s+"([^"]*)"/);
+                        if (parts) {
+                            fields.push({ name: parts[1], value: parts[2], inline: false });
+                        }
+                    }
+                    for (const fm of fieldMatches) {
+                        fullText = fullText.replace(fm, '');
+                    }
+                }
+
+                // Extraer campos inline -fieldi "Nombre" "Valor"
+                const fieldiMatches = fullText.match(/-fieldi\s+"([^"]*)"\s+"([^"]*)"/g);
+                if (fieldiMatches) {
+                    for (const fm of fieldiMatches) {
+                        const parts = fm.match(/-fieldi\s+"([^"]*)"\s+"([^"]*)"/);
+                        if (parts) {
+                            fields.push({ name: parts[1], value: parts[2], inline: true });
+                        }
+                    }
+                    for (const fm of fieldiMatches) {
+                        fullText = fullText.replace(fm, '');
+                    }
+                }
+
+                text = fullText.trim();
+                if (text === '' && !title && !description) {
+                    return message.reply('❌ Debes incluir al menos un título, descripción o texto.');
+                }
+            } else {
+                text = fullText.trim();
+                if (!text) {
+                    return message.reply('❌ Uso correcto: `!anuncio <mensaje>`');
+                }
+            }
+
+            // ===== ELIMINAR MENSAJE DEL USUARIO =====
+            try { await message.delete(); } catch (e) {}
+
+            // ===== CONSTRUIR EMBED O MENSAJE SIMPLE =====
+            if (useEmbed) {
+                const embed = new EmbedBuilder()
+                    .setColor(color)
+                    .setTimestamp();
+
+                if (title) embed.setTitle(title);
+                if (description) embed.setDescription(description);
+                if (author) embed.setAuthor({ name: author, iconURL: message.author.displayAvatarURL() });
+                if (footer) embed.setFooter({ text: footer, iconURL: message.guild?.iconURL() });
+                if (imageUrl) embed.setImage(imageUrl);
+                if (thumbnail) embed.setThumbnail(thumbnail);
+
+                for (const field of fields) {
+                    embed.addFields({ name: field.name, value: field.value, inline: field.inline || false });
+                }
+
+                if (text && !description) {
+                    embed.setDescription(text);
+                } else if (text && description) {
+                    embed.addFields({ name: '📌 Información adicional', value: text, inline: false });
+                }
+
+                if (!author) {
+                    embed.setAuthor({ 
+                        name: message.author.username, 
+                        iconURL: message.author.displayAvatarURL() 
+                    });
+                }
+
+                const content = mentionEveryone ? '@everyone' : '';
+                await message.channel.send({
+                    content: content,
+                    embeds: [embed]
+                });
+
+            } else {
+                await message.channel.send(text);
+            }
+
+            await sendLog(message.guild, `📢 ${message.author.tag} envió un anuncio`, 0xFF9800);
+
+        } catch (error) {
+            console.error('[!] Error en !anuncio:', error);
+            message.reply('❌ Error al enviar el anuncio. Verifica que la URL de la imagen sea válida.');
+        }
+    }
 });
 
-// ============ INTERACCIONES (BOTONES) ============
+// ============ INTERACCIONES ============
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
@@ -285,7 +429,6 @@ client.on('interactionCreate', async (interaction) => {
             const userRole = interaction.guild.roles.cache.get(USER_ROLE_ID);
             
             if (verifiedRole) {
-                // Quitar rol User y asignar Verified
                 if (userRole) {
                     await interaction.member.roles.remove(userRole).catch(() => {});
                 }
@@ -407,7 +550,6 @@ client.on('interactionCreate', async (interaction) => {
                 ephemeral: false
             });
 
-            // Cambiar el nombre del canal para indicar que está reclamado
             const newName = `reclamado-${interaction.channel.name.replace('ticket-', '')}`;
             await interaction.channel.setName(newName).catch(() => {});
 
@@ -524,7 +666,6 @@ client.on(Events.GuildMemberAdd, async (member) => {
             }
         }
 
-        // Actualizar caché
         for (const [code, invite] of invites) {
             cachedInvites[code] = invite.uses;
         }
@@ -533,7 +674,6 @@ client.on(Events.GuildMemberAdd, async (member) => {
 
         const totalInvites = membersHistory[member.guild.id]?.invites?.[inviterName] || 0;
 
-        // ===== ENVIAR MENSAJE AL CANAL DE ENTRADAS =====
         const joinChannel = member.guild.channels.cache.get(JOIN_CHANNEL_ID);
         if (joinChannel) {
             const embed = new EmbedBuilder()
