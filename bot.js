@@ -83,40 +83,81 @@ async function sendLog(guild, message, color = 0x5865F2) {
     }
 }
 
-// ============ FUNCIÓN PARA ENVIAR TRANSCRIPCIÓN DE TICKET ============
+// ============ FUNCIÓN PARA ENVIAR TRANSCRIPCIÓN DE TICKET CON BOTÓN ============
 async function sendTicketTranscript(channel, closer) {
     const guild = channel.guild;
     const transcriptChannel = guild.channels.cache.get(TICKET_TRANSCRIPT_CHANNEL_ID);
-    if (!transcriptChannel) return;
+    if (!transcriptChannel) {
+        console.log('[!] No se encontró el canal de transcripciones');
+        return;
+    }
 
     try {
-        const messages = await channel.messages.fetch({ limit: 100 });
-        const transcript = messages.reverse().map(m => 
-            `[${m.createdAt.toLocaleString()}] ${m.author.tag}: ${m.content || '(Embed o archivo)'}`
-        ).join('\n');
+        const messages = await channel.messages.fetch({ limit: 150 });
+        const userId = channel.name.replace('ticket-', '').replace('reclamado-', '');
+        
+        // Construir la transcripción
+        let transcriptText = `═══════════════════════════════════════\n`;
+        transcriptText += `📋 TRANSCRIPCIÓN DE TICKET\n`;
+        transcriptText += `═══════════════════════════════════════\n`;
+        transcriptText += `👤 Usuario: ${userId}\n`;
+        transcriptText += `🔒 Cerrado por: ${closer}\n`;
+        transcriptText += `📅 Fecha: ${new Date().toLocaleString()}\n`;
+        transcriptText += `📝 Mensajes: ${messages.size}\n`;
+        transcriptText += `═══════════════════════════════════════\n\n`;
 
+        const messagesArray = messages.reverse();
+        for (const msg of messagesArray) {
+            const timestamp = msg.createdAt.toLocaleString();
+            const author = msg.author.tag;
+            const content = msg.content || '(Embed o archivo)';
+            transcriptText += `[${timestamp}] ${author}: ${content}\n`;
+            
+            // Si tiene attachments, mostrarlos
+            if (msg.attachments.size > 0) {
+                for (const [_, attachment] of msg.attachments) {
+                    transcriptText += `  📎 ${attachment.name}: ${attachment.url}\n`;
+                }
+            }
+        }
+
+        transcriptText += `\n═══════════════════════════════════════\n`;
+        transcriptText += `📋 FIN DE LA TRANSCRIPCIÓN\n`;
+        transcriptText += `═══════════════════════════════════════\n`;
+
+        // Crear embed con la transcripción
         const embed = new EmbedBuilder()
-            .setColor(0xF44336)
+            .setColor(0x5865F2)
             .setTitle('📋 TRANSCRIPCIÓN DE TICKET')
             .addFields(
-                { name: '👤 Usuario', value: `<@${channel.name.replace('ticket-', '')}>`, inline: true },
+                { name: '👤 Usuario', value: `<@${userId}>`, inline: true },
                 { name: '🔒 Cerrado por', value: closer, inline: true },
                 { name: '📅 Fecha', value: new Date().toLocaleString(), inline: true },
-                { name: '📝 Mensajes', value: `${messages.size} mensajes` }
+                { name: '📝 Mensajes', value: `${messages.size} mensajes`, inline: true },
+                { name: '📌 Canal', value: `#${channel.name}`, inline: true }
             )
             .setTimestamp();
 
-        await transcriptChannel.send({ embeds: [embed] });
-        
-        if (transcript.length > 1000) {
-            const buffer = Buffer.from(transcript, 'utf-8');
-            await transcriptChannel.send({
-                files: [{
-                    attachment: buffer,
-                    name: `transcript-${channel.name}.txt`
-                }]
-            });
-        }
+        // Crear botón para descargar
+        const row = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`download_transcript_${channel.id}`)
+                    .setLabel('📥 Descargar Transcripción')
+                    .setStyle(ButtonStyle.Primary)
+            );
+
+        // Enviar al canal de transcripciones
+        await transcriptChannel.send({
+            embeds: [embed],
+            components: [row]
+        });
+
+        // Guardar el transcript para descarga
+        if (!global.transcripts) global.transcripts = new Map();
+        global.transcripts.set(`transcript_${channel.id}`, transcriptText);
+
+        console.log(`[✅] Transcripción enviada al canal de transcripciones para ${channel.name}`);
 
     } catch (error) {
         console.error('[!] Error enviando transcript:', error);
@@ -353,18 +394,18 @@ client.on('messageCreate', async (message) => {
         await sendLog(message.guild, `🛡️ ${message.author.tag} ${antiRaidEnabled ? 'activó' : 'desactivó'} Anti-Raid`, 0xFF9800);
     }
 
-    // ===== COMANDO: !anuncio (ABRE MODAL DIRECTO EN EL CANAL) =====
+    // ===== COMANDO: !anuncio =====
     if (command === 'anuncio') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
         }
 
         try {
-            // Guardar el ID del canal para usarlo después
+            await message.delete().catch(() => {});
+
             if (!global.announceChannel) global.announceChannel = new Map();
             global.announceChannel.set(message.author.id, message.channel.id);
 
-            // Crear un botón efímero para mostrar el modal
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
@@ -378,7 +419,6 @@ client.on('messageCreate', async (message) => {
                 components: [row]
             });
 
-            // Eliminar el mensaje después de 30 segundos
             setTimeout(() => {
                 msg.delete().catch(() => {});
             }, 30000);
@@ -391,18 +431,16 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ===== COMANDO: !sorteo (ABRE MODAL DIRECTO EN EL CANAL) =====
+    // ===== COMANDO: !sorteo =====
     if (command === 'sorteo') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
         }
 
         try {
-            // Guardar el ID del canal para usarlo después
             if (!global.sorteoChannel) global.sorteoChannel = new Map();
             global.sorteoChannel.set(message.author.id, message.channel.id);
 
-            // Crear un botón efímero para mostrar el modal
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
@@ -416,7 +454,6 @@ client.on('messageCreate', async (message) => {
                 components: [row]
             });
 
-            // Eliminar el mensaje después de 30 segundos
             setTimeout(() => {
                 msg.delete().catch(() => {});
             }, 30000);
@@ -434,7 +471,45 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton()) {
         
-        // ===== BOTÓN PARA ABRIR MODAL DE ANUNCIO DIRECTO =====
+        // ===== BOTÓN PARA DESCARGAR TRANSCRIPCIÓN =====
+        if (interaction.customId.startsWith('download_transcript_')) {
+            try {
+                const channelId = interaction.customId.replace('download_transcript_', '');
+                const transcriptKey = `transcript_${channelId}`;
+                
+                if (!global.transcripts || !global.transcripts.has(transcriptKey)) {
+                    return interaction.reply({
+                        content: '❌ No se encontró la transcripción para descargar.',
+                        ephemeral: true
+                    });
+                }
+
+                const transcriptText = global.transcripts.get(transcriptKey);
+                const buffer = Buffer.from(transcriptText, 'utf-8');
+                const fileName = `transcript-${channelId}-${Date.now()}.txt`;
+
+                await interaction.reply({
+                    content: '📥 Aquí tienes tu transcripción:',
+                    files: [{
+                        attachment: buffer,
+                        name: fileName
+                    }],
+                    ephemeral: true
+                });
+
+                // Eliminar la transcripción después de descargarla
+                global.transcripts.delete(transcriptKey);
+
+            } catch (error) {
+                console.error('[!] Error descargando transcripción:', error);
+                await interaction.reply({
+                    content: '❌ Error al descargar la transcripción.',
+                    ephemeral: true
+                }).catch(() => {});
+            }
+        }
+
+        // ===== BOTÓN PARA ABRIR MODAL DE ANUNCIO =====
         if (interaction.customId === 'abrir_anuncio_directo') {
             try {
                 const modal = new ModalBuilder()
@@ -500,7 +575,7 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // ===== BOTÓN PARA ABRIR MODAL DE SORTEO DIRECTO =====
+        // ===== BOTÓN PARA ABRIR MODAL DE SORTEO =====
         if (interaction.customId === 'abrir_sorteo_directo') {
             try {
                 const modal = new ModalBuilder()
@@ -611,7 +686,6 @@ client.on('interactionCreate', async (interaction) => {
                     ephemeral: true
                 });
 
-                // Actualizar el contador de participantes en el mensaje
                 const channel = await client.channels.fetch(giveaway.channelId).catch(() => null);
                 if (channel) {
                     try {
@@ -888,10 +962,8 @@ client.on('interactionCreate', async (interaction) => {
                 embed.setFooter({ text: footer });
             }
 
-            // Obtener el canal donde se usó el comando
             let targetChannel = interaction.channel;
             
-            // Si tenemos un canal guardado para este usuario, usarlo
             if (global.announceChannel && global.announceChannel.has(interaction.user.id)) {
                 const channelId = global.announceChannel.get(interaction.user.id);
                 const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -923,7 +995,6 @@ client.on('interactionCreate', async (interaction) => {
     // ===== MODAL DE SORTEO =====
     if (interaction.isModalSubmit() && interaction.customId === 'sorteo_modal') {
         try {
-            // Obtener valores del modal
             const title = interaction.fields.getTextInputValue('sorteo_titulo');
             const description = interaction.fields.getTextInputValue('sorteo_desc');
             const winnersCount = parseInt(interaction.fields.getTextInputValue('sorteo_ganadores')) || 1;
@@ -931,7 +1002,6 @@ client.on('interactionCreate', async (interaction) => {
             const color = interaction.fields.getTextInputValue('sorteo_color') || '#e94560';
             const imageUrl = interaction.fields.getTextInputValue('sorteo_img') || '';
 
-            // Validaciones
             if (!title || title.trim() === '') {
                 return interaction.reply({
                     content: '❌ Debes escribir un título para el sorteo.',
@@ -963,7 +1033,6 @@ client.on('interactionCreate', async (interaction) => {
             const colorRegex = /^#[0-9a-fA-F]{6}$/;
             const finalColor = colorRegex.test(color) ? color : '#e94560';
 
-            // Obtener el canal donde se usó el comando
             let targetChannel = interaction.channel;
             
             if (global.sorteoChannel && global.sorteoChannel.has(interaction.user.id)) {
@@ -973,18 +1042,12 @@ client.on('interactionCreate', async (interaction) => {
                 global.sorteoChannel.delete(interaction.user.id);
             }
 
-            // Generar ID único para el sorteo
             const giveawayId = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
-
-            // Calcular tiempo de finalización
             const endTime = new Date(Date.now() + durationHours * 60 * 60 * 1000);
             const endTimestamp = Math.floor(endTime.getTime() / 1000);
-
-            // Calcular tiempo restante para mostrar
             const hours = Math.floor(durationHours);
             const minutes = Math.floor((durationHours % 1) * 60);
 
-            // Crear embed del sorteo
             const embed = new EmbedBuilder()
                 .setColor(finalColor)
                 .setTitle('🎉 ' + title)
@@ -1006,7 +1069,6 @@ client.on('interactionCreate', async (interaction) => {
 
             embed.setFooter({ text: `👥 0 participantes • ⏱️ ${hours}h ${minutes}m restantes` });
 
-            // Botones
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
@@ -1019,14 +1081,12 @@ client.on('interactionCreate', async (interaction) => {
                         .setStyle(ButtonStyle.Danger)
                 );
 
-            // Enviar mensaje del sorteo en el canal
             const message = await targetChannel.send({
                 content: `🎉 **NUEVO SORTEO** 🎉\nParticipa haciendo clic en el botón de abajo.`,
                 embeds: [embed],
                 components: [row]
             });
 
-            // Guardar datos del sorteo
             if (!giveawaysData[interaction.guildId]) {
                 giveawaysData[interaction.guildId] = {};
             }
@@ -1046,7 +1106,6 @@ client.on('interactionCreate', async (interaction) => {
             };
             saveGiveaways();
 
-            // Programar finalización automática
             setTimeout(async () => {
                 try {
                     const giveaway = giveawaysData[interaction.guildId]?.[giveawayId];
@@ -1071,7 +1130,6 @@ client.on('interactionCreate', async (interaction) => {
                 }
             }, durationHours * 60 * 60 * 1000);
 
-            // Respuesta al usuario
             await interaction.reply({
                 content: `✅ **Sorteo creado correctamente!**\n📌 Título: ${title}\n👥 Ganadores: ${winnersCount}\n⏱️ Finaliza: <t:${endTimestamp}:R>\n📢 Publicado en: <#${targetChannel.id}>`,
                 ephemeral: true
