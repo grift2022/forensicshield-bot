@@ -83,7 +83,7 @@ async function sendLog(guild, message, color = 0x5865F2) {
     }
 }
 
-// ============ FUNCIÓN PARA ENVIAR TRANSCRIPCIÓN DE TICKET CON BOTÓN ============
+// ============ FUNCIÓN PARA ENVIAR TRANSCRIPCIÓN DE TICKET ============
 async function sendTicketTranscript(channel, closer) {
     const guild = channel.guild;
     const transcriptChannel = guild.channels.cache.get(TICKET_TRANSCRIPT_CHANNEL_ID);
@@ -113,7 +113,6 @@ async function sendTicketTranscript(channel, closer) {
             const content = msg.content || '(Embed o archivo)';
             transcriptText += `[${timestamp}] ${author}: ${content}\n`;
             
-            // Si tiene attachments, mostrarlos
             if (msg.attachments.size > 0) {
                 for (const [_, attachment] of msg.attachments) {
                     transcriptText += `  📎 ${attachment.name}: ${attachment.url}\n`;
@@ -124,6 +123,10 @@ async function sendTicketTranscript(channel, closer) {
         transcriptText += `\n═══════════════════════════════════════\n`;
         transcriptText += `📋 FIN DE LA TRANSCRIPCIÓN\n`;
         transcriptText += `═══════════════════════════════════════\n`;
+
+        // Crear el archivo de transcripción
+        const buffer = Buffer.from(transcriptText, 'utf-8');
+        const fileName = `transcript-${channel.name}-${Date.now()}.txt`;
 
         // Crear embed con la transcripción
         const embed = new EmbedBuilder()
@@ -138,24 +141,31 @@ async function sendTicketTranscript(channel, closer) {
             )
             .setTimestamp();
 
-        // Crear botón para descargar
+        // Botón para descargar - USANDO UN CUSTOM_ID CORRECTO
         const row = new ActionRowBuilder()
             .addComponents(
                 new ButtonBuilder()
-                    .setCustomId(`download_transcript_${channel.id}`)
+                    .setCustomId(`descargar_transcript_${channel.id}_${Date.now()}`)
                     .setLabel('📥 Descargar Transcripción')
                     .setStyle(ButtonStyle.Primary)
+                    .setEmoji('📥')
             );
+
+        // Guardar la transcripción en memoria con un ID único
+        const transcriptId = `transcript_${channel.id}_${Date.now()}`;
+        if (!global.transcripts) global.transcripts = new Map();
+        global.transcripts.set(transcriptId, transcriptText);
+
+        // Guardar el ID del canal para asociarlo
+        if (!global.transcriptChannels) global.transcriptChannels = new Map();
+        global.transcriptChannels.set(transcriptId, channel.id);
 
         // Enviar al canal de transcripciones
         await transcriptChannel.send({
+            content: `📋 **Nueva transcripción de ticket**\nTicket: #${channel.name}`,
             embeds: [embed],
             components: [row]
         });
-
-        // Guardar el transcript para descarga
-        if (!global.transcripts) global.transcripts = new Map();
-        global.transcripts.set(`transcript_${channel.id}`, transcriptText);
 
         console.log(`[✅] Transcripción enviada al canal de transcripciones para ${channel.name}`);
 
@@ -431,7 +441,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ===== COMANDO: !sorteo =====
+    // ===== COMANDO: !sorteo (CORREGIDO) =====
     if (command === 'sorteo') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
@@ -444,7 +454,7 @@ client.on('messageCreate', async (message) => {
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId('abrir_sorteo_directo')
+                        .setCustomId('abrir_sorteo')
                         .setLabel('🎉 Crear Sorteo')
                         .setStyle(ButtonStyle.Success)
                 );
@@ -472,24 +482,44 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton()) {
         
         // ===== BOTÓN PARA DESCARGAR TRANSCRIPCIÓN =====
-        if (interaction.customId.startsWith('download_transcript_')) {
+        if (interaction.customId.startsWith('descargar_transcript_')) {
             try {
-                const channelId = interaction.customId.replace('download_transcript_', '');
-                const transcriptKey = `transcript_${channelId}`;
-                
-                if (!global.transcripts || !global.transcripts.has(transcriptKey)) {
+                // Buscar la transcripción en el Map
+                let transcriptText = null;
+                let transcriptKey = null;
+
+                for (const [key, value] of global.transcripts || new Map()) {
+                    if (interaction.customId.includes(key.split('_')[2])) {
+                        transcriptText = value;
+                        transcriptKey = key;
+                        break;
+                    }
+                }
+
+                // Si no se encuentra por el método anterior, buscar por el ID del canal
+                if (!transcriptText) {
+                    const channelId = interaction.customId.split('_')[2];
+                    for (const [key, value] of global.transcripts || new Map()) {
+                        if (key.includes(channelId)) {
+                            transcriptText = value;
+                            transcriptKey = key;
+                            break;
+                        }
+                    }
+                }
+
+                if (!transcriptText) {
                     return interaction.reply({
-                        content: '❌ No se encontró la transcripción para descargar.',
+                        content: '❌ No se encontró la transcripción para descargar. Puede que haya expirado.',
                         ephemeral: true
                     });
                 }
 
-                const transcriptText = global.transcripts.get(transcriptKey);
                 const buffer = Buffer.from(transcriptText, 'utf-8');
-                const fileName = `transcript-${channelId}-${Date.now()}.txt`;
+                const fileName = `transcript-${Date.now()}.txt`;
 
                 await interaction.reply({
-                    content: '📥 Aquí tienes tu transcripción:',
+                    content: '📥 **Aquí tienes tu transcripción:**',
                     files: [{
                         attachment: buffer,
                         name: fileName
@@ -498,7 +528,9 @@ client.on('interactionCreate', async (interaction) => {
                 });
 
                 // Eliminar la transcripción después de descargarla
-                global.transcripts.delete(transcriptKey);
+                if (transcriptKey && global.transcripts) {
+                    global.transcripts.delete(transcriptKey);
+                }
 
             } catch (error) {
                 console.error('[!] Error descargando transcripción:', error);
@@ -575,8 +607,8 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // ===== BOTÓN PARA ABRIR MODAL DE SORTEO =====
-        if (interaction.customId === 'abrir_sorteo_directo') {
+        // ===== BOTÓN PARA ABRIR MODAL DE SORTEO (CORREGIDO) =====
+        if (interaction.customId === 'abrir_sorteo') {
             try {
                 const modal = new ModalBuilder()
                     .setCustomId('sorteo_modal')
@@ -893,6 +925,7 @@ client.on('interactionCreate', async (interaction) => {
                     });
                 }
 
+                // Enviar la transcripción ANTES de cerrar
                 await sendTicketTranscript(interaction.channel, interaction.user.tag);
 
                 await interaction.reply({
