@@ -883,6 +883,47 @@ client.on('messageCreate', async (message) => {
             message.reply('❌ Error al abrir el panel de anuncios. Asegúrate de tener los DMs abiertos.');
         }
     }
+
+    // ===== NUEVO COMANDO: !comandos (LISTA DE TODOS LOS COMANDOS) =====
+    if (command === 'comandos' || command === 'help' || command === 'ayuda') {
+        const embed = new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle('📋 LISTA DE COMANDOS - ForensicShield')
+            .setDescription('Aquí tienes todos los comandos disponibles y quién puede usarlos.')
+            .addFields(
+                { name: '🔓 **Comandos Públicos**', value: 
+                    '`!verificar` - Muestra tus roles actuales\n' +
+                    '`!verificacion` - Crea el panel de verificación (solo la primera vez)\n' +
+                    '`!comandos` - Muestra esta lista de comandos', 
+                    inline: false 
+                },
+                { name: '🛡️ **Comandos de Administración**', value: 
+                    '`!ticket` - Crea el panel de tickets\n' +
+                    '`!anuncio` - Abre el panel para crear anuncios\n' +
+                    '`!sorteo` - Abre el panel para crear sorteos\n' +
+                    '`!terminarsorteo <ID>` - Finaliza un sorteo manualmente\n' +
+                    '`!rerollsorteo <ID>` - Vuelve a sortear un ganador\n' +
+                    '`!lockserver` - Bloquea el servidor (desactiva enviar mensajes)\n' +
+                    '`!unlockserver` - Desbloquea el servidor\n' +
+                    '`!nuke` - Limpia el canal actual (lo clona y elimina)\n' +
+                    '`!check` - Muestra roles con permisos sensibles\n' +
+                    '`!anti-raid` - Activa/Desactiva el Anti-Raid\n' +
+                    '`!antiraidconfig` - Muestra la configuración actual del Anti-Raid', 
+                    inline: false 
+                },
+                { name: '👑 **Comandos de Owner (Propietario)**', value: 
+                    '`!autosetup` - Configura el Anti-Raid con valores recomendados\n' +
+                    '`!whitelist add/remove @usuario|@rol` - Gestiona la whitelist del Anti-Raid\n' +
+                    '`!globalban add/remove <ID>` - Gestiona la lista negra global de raiders', 
+                    inline: false 
+                }
+            )
+            .setFooter({ text: 'ForensicShield Bot - v3.0' })
+            .setTimestamp();
+
+        await message.reply({ embeds: [embed] });
+        await sendLog(message.guild, `📋 ${message.author.tag} usó !comandos`, 0x5865F2);
+    }
 });
 
 // ============ INTERACCIONES ============
