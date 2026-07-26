@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, Events, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, Events, ModalBuilder, TextInputBuilder, TextInputStyle, AuditLogEvent } = require('discord.js');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -23,6 +23,8 @@ const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
 const MEMBERS_FILE = path.join(DATA_DIR, 'members.json');
 const VERIFICATION_FILE = path.join(DATA_DIR, 'verification.json');
 const GIVEAWAYS_FILE = path.join(DATA_DIR, 'giveaways.json'); // Sorteos
+const ANTIRAID_CONFIG_FILE = path.join(DATA_DIR, 'antiraid_config.json'); // Configuración Anti-Raid por servidor
+const RAIDER_BLACKLIST_FILE = path.join(DATA_DIR, 'raiders.json'); // Lista negra global de raiders
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
@@ -46,10 +48,22 @@ if (fs.existsSync(GIVEAWAYS_FILE)) {
     try { giveawaysData = JSON.parse(fs.readFileSync(GIVEAWAYS_FILE)); } catch { giveawaysData = {}; }
 }
 
+let antiraidConfig = {};
+if (fs.existsSync(ANTIRAID_CONFIG_FILE)) {
+    try { antiraidConfig = JSON.parse(fs.readFileSync(ANTIRAID_CONFIG_FILE)); } catch { antiraidConfig = {}; }
+}
+
+let raiderBlacklist = [];
+if (fs.existsSync(RAIDER_BLACKLIST_FILE)) {
+    try { raiderBlacklist = JSON.parse(fs.readFileSync(RAIDER_BLACKLIST_FILE)); } catch { raiderBlacklist = []; }
+}
+
 function saveInvites() { fs.writeFileSync(INVITES_FILE, JSON.stringify(invitesData, null, 2)); }
 function saveMembers() { fs.writeFileSync(MEMBERS_FILE, JSON.stringify(membersHistory, null, 2)); }
 function saveVerification() { fs.writeFileSync(VERIFICATION_FILE, JSON.stringify(verificationData, null, 2)); }
 function saveGiveaways() { fs.writeFileSync(GIVEAWAYS_FILE, JSON.stringify(giveawaysData, null, 2)); }
+function saveAntiraidConfig() { fs.writeFileSync(ANTIRAID_CONFIG_FILE, JSON.stringify(antiraidConfig, null, 2)); }
+function saveRaiderBlacklist() { fs.writeFileSync(RAIDER_BLACKLIST_FILE, JSON.stringify(raiderBlacklist, null, 2)); }
 
 // ============ CLIENTE DE DISCORD ============
 const client = new Client({
@@ -64,7 +78,10 @@ const client = new Client({
 });
 
 let isReady = false;
-let antiRaidEnabled = false;
+// Trackers en memoria para detectar ráfagas de acciones (no necesitan persistir entre reinicios)
+const actionTrackers = {};   // clave -> array de timestamps
+const joinRaidWindow = {};   // guildId -> array de { id, time }
+const joinRaidTriggered = {}; // guildId -> timestamp del último disparo (evita re-disparar en bucle)
 let joinLogChannel = null;
 let leaveLogChannel = null;
 
@@ -82,6 +99,137 @@ async function sendLog(guild, message, color = 0x5865F2) {
             .setDescription(message)
             .setTimestamp();
         await logChannel.send({ embeds: [embed] }).catch(() => {});
+    }
+}
+
+// ============ SISTEMA ANTI-RAID AVANZADO ============
+
+function getDefaultAntiraidConfig() {
+    return {
+        enabled: false,
+        joinRaid: { maxJoins: 5, windowMs: 10000, action: 'lockdown' }, // action: 'alert' | 'kick' | 'ban' | 'lockdown'
+        massBan: { maxActions: 3, windowMs: 10000, punishment: 'ban' },       // punishment: 'strip' | 'kick' | 'ban'
+        massKick: { maxActions: 3, windowMs: 10000, punishment: 'ban' },
+        massChannelDelete: { maxActions: 2, windowMs: 10000, punishment: 'ban' },
+        massChannelCreate: { maxActions: 3, windowMs: 10000, punishment: 'strip' },
+        massRoleDelete: { maxActions: 2, windowMs: 10000, punishment: 'ban' },
+        antiSpamInvites: true,
+        whitelistUsers: [],
+        whitelistRoles: [],
+        alertChannelId: null
+    };
+}
+
+function getAntiraidConfig(guildId) {
+    if (!antiraidConfig[guildId]) {
+        antiraidConfig[guildId] = getDefaultAntiraidConfig();
+        saveAntiraidConfig();
+    }
+    return antiraidConfig[guildId];
+}
+
+function isWhitelisted(config, member) {
+    if (!member) return false;
+    if (config.whitelistUsers.includes(member.id)) return true;
+    if (member.roles?.cache && config.whitelistRoles.some(r => member.roles.cache.has(r))) return true;
+    return false;
+}
+
+// Cuenta cuántas veces ha ocurrido una acción (identificada por "key") dentro de la ventana de tiempo dada
+function trackAction(key, windowMs) {
+    const now = Date.now();
+    if (!actionTrackers[key]) actionTrackers[key] = [];
+    actionTrackers[key] = actionTrackers[key].filter(t => now - t < windowMs);
+    actionTrackers[key].push(now);
+    return actionTrackers[key].length;
+}
+
+function trackJoin(guildId, memberId, windowMs) {
+    const now = Date.now();
+    if (!joinRaidWindow[guildId]) joinRaidWindow[guildId] = [];
+    joinRaidWindow[guildId] = joinRaidWindow[guildId].filter(e => now - e.time < windowMs);
+    joinRaidWindow[guildId].push({ id: memberId, time: now });
+    return joinRaidWindow[guildId];
+}
+
+async function sendRaidAlert(guild, message) {
+    const config = getAntiraidConfig(guild.id);
+    const channel = guild.channels.cache.get(config.alertChannelId) || guild.channels.cache.get(LOG_CHANNEL_ID);
+    if (!channel) return;
+    const embed = new EmbedBuilder()
+        .setColor(0xFF0000)
+        .setTitle('🚨 ALERTA ANTI-RAID')
+        .setDescription(message)
+        .setTimestamp();
+    await channel.send({ content: `<@&${OWNER_ROLE_ID}> <@&${ADMIN_ROLE_ID}>`, embeds: [embed] }).catch(() => {});
+}
+
+// Aplica el castigo configurado sobre quien está provocando el raid
+async function punishRaider(guild, userId, punishment, reason) {
+    try {
+        const member = await guild.members.fetch(userId).catch(() => null);
+        if (!member) return;
+
+        if (punishment === 'strip') {
+            const dangerousPerms = [
+                PermissionFlagsBits.Administrator, PermissionFlagsBits.BanMembers,
+                PermissionFlagsBits.KickMembers, PermissionFlagsBits.ManageChannels,
+                PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageGuild
+            ];
+            const rolesToStrip = member.roles.cache.filter(r => r.id !== guild.id && dangerousPerms.some(p => r.permissions.has(p)));
+            for (const role of rolesToStrip.values()) {
+                await member.roles.remove(role).catch(() => {});
+            }
+        } else if (punishment === 'kick') {
+            await member.kick(reason).catch(() => {});
+        } else if (punishment === 'ban') {
+            await member.ban({ reason }).catch(() => {});
+        }
+    } catch (error) {
+        console.error('[!] Error castigando a raider:', error);
+    }
+}
+
+async function lockdownGuild(guild, auto = false) {
+    try {
+        const channels = guild.channels.cache.filter(ch => ch.type === ChannelType.GuildText || ch.type === ChannelType.GuildAnnouncement);
+        for (const channel of channels.values()) {
+            await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false }).catch(() => {});
+        }
+        await sendLog(guild, `🔒 Servidor bloqueado ${auto ? 'automáticamente por el sistema Anti-Raid' : 'manualmente'}`, 0xFF0000);
+    } catch (error) {
+        console.error('[!] Error en lockdown:', error);
+    }
+}
+
+async function unlockGuild(guild) {
+    try {
+        const channels = guild.channels.cache.filter(ch => ch.type === ChannelType.GuildText || ch.type === ChannelType.GuildAnnouncement);
+        for (const channel of channels.values()) {
+            await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: null }).catch(() => {});
+        }
+        await sendLog(guild, `🔓 Servidor desbloqueado`, 0x4CAF50);
+    } catch (error) {
+        console.error('[!] Error al desbloquear:', error);
+    }
+}
+
+async function handleJoinRaidDetected(guild, config, recentJoins) {
+    const now = Date.now();
+    if (joinRaidTriggered[guild.id] && now - joinRaidTriggered[guild.id] < 60000) return; // cooldown de 1 min
+    joinRaidTriggered[guild.id] = now;
+
+    await sendRaidAlert(guild, `Se detectó una entrada masiva de **${recentJoins.length} usuarios** en menos de ${Math.round(config.joinRaid.windowMs / 1000)}s.\nAcción aplicada: **${config.joinRaid.action}**.`);
+
+    if (config.joinRaid.action === 'lockdown') {
+        await lockdownGuild(guild, true);
+    } else if (config.joinRaid.action === 'kick' || config.joinRaid.action === 'ban') {
+        for (const entry of recentJoins) {
+            const member = await guild.members.fetch(entry.id).catch(() => null);
+            if (!member || isWhitelisted(config, member)) continue;
+            if (config.joinRaid.action === 'kick') await member.kick('Anti-Raid: entrada masiva detectada').catch(() => {});
+            else await member.ban({ reason: 'Anti-Raid: entrada masiva detectada' }).catch(() => {});
+        }
     }
 }
 
@@ -280,6 +428,22 @@ client.once('ready', () => {
 // ============ COMANDOS ============
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
+
+    // ===== ANTI-SPAM: invitaciones de Discord =====
+    if (message.guild && message.member) {
+        const config = getAntiraidConfig(message.guild.id);
+        if (config.enabled && config.antiSpamInvites && !hasPermission(message.member) && !isWhitelisted(config, message.member)) {
+            const inviteRegex = /(discord\.gg|discord\.com\/invite|discordapp\.com\/invite)\/[a-zA-Z0-9-]+/i;
+            if (inviteRegex.test(message.content)) {
+                await message.delete().catch(() => {});
+                const warnMsg = await message.channel.send(`⚠️ ${message.author}, no está permitido enviar invitaciones de Discord.`).catch(() => null);
+                if (warnMsg) setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
+                await sendLog(message.guild, `🚫 Se eliminó una invitación de Discord enviada por ${message.author.tag}`, 0xFF9800);
+                return;
+            }
+        }
+    }
+
     if (!message.content.startsWith('!')) return;
 
     const args = message.content.slice(1).trim().split(/ +/);
@@ -377,15 +541,177 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // ===== COMANDO: !anti-raid =====
+    // ===== COMANDO: !anti-raid (activar/desactivar) =====
     if (command === 'anti-raid' || command === 'antiraid') {
         if (!hasPermission(message.member)) {
             return message.reply('❌ No tienes permiso para usar este comando.');
         }
 
-        antiRaidEnabled = !antiRaidEnabled;
-        message.channel.send(antiRaidEnabled ? '🛡️ **Anti-Raid ACTIVADO**' : '🛡️ **Anti-Raid DESACTIVADO**');
-        await sendLog(message.guild, `🛡️ ${message.author.tag} ${antiRaidEnabled ? 'activó' : 'desactivó'} Anti-Raid`, 0xFF9800);
+        const config = getAntiraidConfig(message.guild.id);
+        config.enabled = !config.enabled;
+        saveAntiraidConfig();
+        message.channel.send(config.enabled ? '🛡️ **Anti-Raid ACTIVADO**' : '🛡️ **Anti-Raid DESACTIVADO**');
+        await sendLog(message.guild, `🛡️ ${message.author.tag} ${config.enabled ? 'activó' : 'desactivó'} Anti-Raid`, 0xFF9800);
+    }
+
+    // ===== COMANDO: !autosetup (configuración recomendada, solo Owner) =====
+    if (command === 'autosetup') {
+        if (!message.member.roles.cache.has(OWNER_ROLE_ID)) {
+            return message.reply('❌ Solo el propietario del servidor puede usar este comando.');
+        }
+
+        antiraidConfig[message.guild.id] = getDefaultAntiraidConfig();
+        antiraidConfig[message.guild.id].enabled = true;
+        antiraidConfig[message.guild.id].alertChannelId = LOG_CHANNEL_ID;
+        saveAntiraidConfig();
+
+        message.reply('✅ Anti-Raid configurado automáticamente con valores recomendados y **activado**.\nUsa `!antiraidconfig` para ver los ajustes.');
+        await sendLog(message.guild, `⚙️ ${message.author.tag} ejecutó autosetup del Anti-Raid`, 0x4CAF50);
+    }
+
+    // ===== COMANDO: !antiraidconfig (ver configuración actual) =====
+    if (command === 'antiraidconfig' || command === 'configantiraid') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
+        const config = getAntiraidConfig(message.guild.id);
+        const embed = new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle('⚙️ Configuración Anti-Raid')
+            .addFields(
+                { name: 'Estado', value: config.enabled ? '🟢 Activado' : '🔴 Desactivado' },
+                { name: '🚪 Raid de entradas', value: `Máx ${config.joinRaid.maxJoins} en ${config.joinRaid.windowMs / 1000}s → **${config.joinRaid.action}**` },
+                { name: '🔨 Baneos masivos', value: `Máx ${config.massBan.maxActions} en ${config.massBan.windowMs / 1000}s → **${config.massBan.punishment}**` },
+                { name: '👢 Expulsiones masivas', value: `Máx ${config.massKick.maxActions} en ${config.massKick.windowMs / 1000}s → **${config.massKick.punishment}**` },
+                { name: '🗑️ Borrado masivo de canales', value: `Máx ${config.massChannelDelete.maxActions} en ${config.massChannelDelete.windowMs / 1000}s → **${config.massChannelDelete.punishment}**` },
+                { name: '📁 Creación masiva de canales', value: `Máx ${config.massChannelCreate.maxActions} en ${config.massChannelCreate.windowMs / 1000}s → **${config.massChannelCreate.punishment}**` },
+                { name: '🔗 Anti-Spam invitaciones', value: config.antiSpamInvites ? '🟢 Activado' : '🔴 Desactivado' },
+                { name: '✅ Whitelist roles', value: config.whitelistRoles.length ? config.whitelistRoles.map(r => `<@&${r}>`).join(', ') : 'Ninguno' },
+                { name: '✅ Whitelist usuarios', value: config.whitelistUsers.length ? config.whitelistUsers.map(u => `<@${u}>`).join(', ') : 'Ninguno' }
+            )
+            .setFooter({ text: 'Usa !autosetup para restaurar valores por defecto, o !whitelist para gestionar excepciones' });
+
+        message.reply({ embeds: [embed] });
+    }
+
+    // ===== COMANDO: !whitelist add/remove @usuario|@rol (solo Owner) =====
+    if (command === 'whitelist') {
+        if (!message.member.roles.cache.has(OWNER_ROLE_ID)) {
+            return message.reply('❌ Solo el propietario del servidor puede modificar la whitelist.');
+        }
+
+        const sub = args[0];
+        const isRoleMention = message.mentions.roles.size > 0;
+        const target = isRoleMention ? message.mentions.roles.first() : message.mentions.members.first();
+
+        if (!sub || !target || !['add', 'remove'].includes(sub.toLowerCase())) {
+            return message.reply('❌ Uso: `!whitelist add` o `remove` seguido de una mención a un usuario o un rol.');
+        }
+
+        const config = getAntiraidConfig(message.guild.id);
+        const list = isRoleMention ? config.whitelistRoles : config.whitelistUsers;
+
+        if (sub.toLowerCase() === 'add') {
+            if (!list.includes(target.id)) list.push(target.id);
+            message.reply(`✅ ${isRoleMention ? 'Rol' : 'Usuario'} añadido a la whitelist del Anti-Raid.`);
+        } else {
+            const idx = list.indexOf(target.id);
+            if (idx !== -1) list.splice(idx, 1);
+            message.reply(`✅ ${isRoleMention ? 'Rol' : 'Usuario'} eliminado de la whitelist del Anti-Raid.`);
+        }
+
+        saveAntiraidConfig();
+        await sendLog(message.guild, `⚙️ ${message.author.tag} modificó la whitelist del Anti-Raid`, 0x5865F2);
+    }
+
+    // ===== COMANDO: !globalban add/remove <ID> (lista negra de raiders, solo Owner) =====
+    if (command === 'globalban') {
+        if (!message.member.roles.cache.has(OWNER_ROLE_ID)) {
+            return message.reply('❌ Solo el propietario del servidor puede usar este comando.');
+        }
+
+        const sub = args[0];
+        const userId = args[1];
+
+        if (!sub || !userId || !['add', 'remove'].includes(sub.toLowerCase())) {
+            return message.reply('❌ Uso: `!globalban add/remove <ID de usuario>`');
+        }
+
+        if (sub.toLowerCase() === 'add') {
+            if (!raiderBlacklist.includes(userId)) raiderBlacklist.push(userId);
+            message.reply(`✅ Usuario \`${userId}\` añadido a la lista negra global de raiders. Será baneado automáticamente si intenta entrar.`);
+        } else {
+            const idx = raiderBlacklist.indexOf(userId);
+            if (idx !== -1) raiderBlacklist.splice(idx, 1);
+            message.reply(`✅ Usuario \`${userId}\` eliminado de la lista negra.`);
+        }
+
+        saveRaiderBlacklist();
+        await sendLog(message.guild, `🚫 ${message.author.tag} modificó la lista negra global de raiders`, 0xF44336);
+    }
+
+    // ===== COMANDO: !lockserver / !unlockserver =====
+    if (command === 'lockserver') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+        await lockdownGuild(message.guild, false);
+        message.reply('🔒 Servidor bloqueado manualmente. Usa `!unlockserver` para desbloquear.');
+    }
+
+    if (command === 'unlockserver') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+        await unlockGuild(message.guild);
+        message.reply('🔓 Servidor desbloqueado.');
+    }
+
+    // ===== COMANDO: !nuke (limpiar canal actual) =====
+    if (command === 'nuke') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+        try {
+            const channel = message.channel;
+            const position = channel.position;
+            const clone = await channel.clone();
+            await clone.setPosition(position);
+            await channel.delete();
+            await clone.send('💣 **Este canal ha sido limpiado.**');
+            await sendLog(message.guild, `💣 ${message.author.tag} usó !nuke en un canal`, 0xFF9800);
+        } catch (error) {
+            console.error('[!] Error en !nuke:', error);
+        }
+    }
+
+    // ===== COMANDO: !check (roles con permisos sensibles) =====
+    if (command === 'check') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
+        const dangerousPerms = [
+            PermissionFlagsBits.Administrator, PermissionFlagsBits.BanMembers,
+            PermissionFlagsBits.KickMembers, PermissionFlagsBits.ManageChannels,
+            PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageGuild
+        ];
+
+        const riskyRoles = message.guild.roles.cache.filter(role =>
+            role.id !== message.guild.id && dangerousPerms.some(p => role.permissions.has(p))
+        );
+
+        const embed = new EmbedBuilder()
+            .setColor(0xFF9800)
+            .setTitle('🔍 Roles con permisos sensibles')
+            .setDescription(
+                riskyRoles.size > 0
+                    ? riskyRoles.map(r => `${r} — ${r.members.size} miembro(s)`).join('\n')
+                    : 'No se encontraron roles con permisos sensibles.'
+            );
+
+        message.reply({ embeds: [embed] });
     }
 
     // ===== COMANDO: !sorteo (PANEL DE SORTEOS) =====
@@ -1054,6 +1380,13 @@ client.on('interactionCreate', async (interaction) => {
 client.on(Events.GuildMemberAdd, async (member) => {
     console.log(`[LOG] ${member.user.tag} entró al servidor`);
 
+    // ===== LISTA NEGRA GLOBAL DE RAIDERS =====
+    if (raiderBlacklist.includes(member.id)) {
+        await member.ban({ reason: 'Anti-Raid: usuario en la lista negra global de raiders' }).catch(() => {});
+        await sendLog(member.guild, `🚫 ${member.user.tag} fue baneado automáticamente (lista negra global de raiders)`, 0xF44336);
+        return;
+    }
+
     // ===== ASIGNAR ROL USER (1530313975361703978) AL ENTRAR =====
     try {
         const userRole = member.guild.roles.cache.get(USER_ROLE_ID);
@@ -1068,25 +1401,12 @@ client.on(Events.GuildMemberAdd, async (member) => {
         console.error(`[!] Error asignando rol User a ${member.user.tag}:`, error);
     }
 
-    // ===== ANTI-RAID =====
-    if (antiRaidEnabled) {
-        const now = Date.now();
-        const timeWindow = 60000;
-        const maxJoins = 5;
-
-        const recentJoins = membersHistory[member.guild.id]?.joins || [];
-        const recent = recentJoins.filter(t => now - t < timeWindow);
-        recent.push(now);
-        membersHistory[member.guild.id] = membersHistory[member.guild.id] || {};
-        membersHistory[member.guild.id].joins = recent;
-        saveMembers();
-
-        if (recent.length > maxJoins) {
-            const channel = member.guild.channels.cache.get(JOIN_CHANNEL_ID) || member.guild.systemChannel;
-            if (channel) {
-                channel.send(`🛡️ **ALERTA DE RAID**\n${recent.length} usuarios en 1 minuto.\n<@&${ADMIN_ROLE_ID}> <@&${OWNER_ROLE_ID}>`);
-                await sendLog(member.guild, `🛡️ Alerta de raid: ${recent.length} usuarios en 1 minuto`, 0xF44336);
-            }
+    // ===== ANTI-RAID: entradas masivas =====
+    const raidConfig = getAntiraidConfig(member.guild.id);
+    if (raidConfig.enabled) {
+        const recentJoins = trackJoin(member.guild.id, member.id, raidConfig.joinRaid.windowMs);
+        if (recentJoins.length > raidConfig.joinRaid.maxJoins) {
+            await handleJoinRaidDetected(member.guild, raidConfig, recentJoins);
         }
     }
 
@@ -1167,6 +1487,98 @@ client.on(Events.GuildMemberRemove, async (member) => {
         await joinChannel.send({ embeds: [embed] });
     }
     await sendLog(member.guild, `🔴 ${member.user.tag} salió del servidor`, 0xF44336);
+
+    // ===== ANTI-RAID: expulsiones masivas =====
+    const raidConfig = getAntiraidConfig(member.guild.id);
+    if (!raidConfig.enabled) return;
+
+    try {
+        const auditLogs = await member.guild.fetchAuditLogs({ type: AuditLogEvent.MemberKick, limit: 5 });
+        const entry = auditLogs.entries.find(e => e.target?.id === member.id && Date.now() - e.createdTimestamp < 5000);
+        if (!entry || !entry.executor || entry.executor.id === client.user.id) return;
+
+        const executorMember = await member.guild.members.fetch(entry.executor.id).catch(() => null);
+        if (executorMember && isWhitelisted(raidConfig, executorMember)) return;
+
+        const count = trackAction(`${member.guild.id}_masskick_${entry.executor.id}`, raidConfig.massKick.windowMs);
+        if (count >= raidConfig.massKick.maxActions) {
+            await punishRaider(member.guild, entry.executor.id, raidConfig.massKick.punishment, 'Anti-Raid: expulsiones masivas detectadas');
+            await sendRaidAlert(member.guild, `Se detectaron **expulsiones masivas** por parte de <@${entry.executor.id}>.\nCastigo aplicado: **${raidConfig.massKick.punishment}**.`);
+        }
+    } catch (error) {
+        console.error('[!] Error en detección de mass-kick:', error);
+    }
+});
+
+client.on(Events.GuildBanAdd, async (ban) => {
+    const guild = ban.guild;
+    const raidConfig = getAntiraidConfig(guild.id);
+    if (!raidConfig.enabled) return;
+
+    try {
+        const auditLogs = await guild.fetchAuditLogs({ type: AuditLogEvent.MemberBanAdd, limit: 5 });
+        const entry = auditLogs.entries.find(e => e.target?.id === ban.user.id && Date.now() - e.createdTimestamp < 5000);
+        if (!entry || !entry.executor || entry.executor.id === client.user.id) return;
+
+        const executorMember = await guild.members.fetch(entry.executor.id).catch(() => null);
+        if (executorMember && isWhitelisted(raidConfig, executorMember)) return;
+
+        const count = trackAction(`${guild.id}_massban_${entry.executor.id}`, raidConfig.massBan.windowMs);
+        if (count >= raidConfig.massBan.maxActions) {
+            await punishRaider(guild, entry.executor.id, raidConfig.massBan.punishment, 'Anti-Raid: baneos masivos detectados');
+            await sendRaidAlert(guild, `Se detectaron **baneos masivos** por parte de <@${entry.executor.id}>.\nCastigo aplicado: **${raidConfig.massBan.punishment}**.`);
+        }
+    } catch (error) {
+        console.error('[!] Error en detección de mass-ban:', error);
+    }
+});
+
+client.on(Events.ChannelDelete, async (channel) => {
+    if (!channel.guild) return;
+    const guild = channel.guild;
+    const raidConfig = getAntiraidConfig(guild.id);
+    if (!raidConfig.enabled) return;
+
+    try {
+        const auditLogs = await guild.fetchAuditLogs({ type: AuditLogEvent.ChannelDelete, limit: 5 });
+        const entry = auditLogs.entries.first();
+        if (!entry || !entry.executor || Date.now() - entry.createdTimestamp > 5000 || entry.executor.id === client.user.id) return;
+
+        const executorMember = await guild.members.fetch(entry.executor.id).catch(() => null);
+        if (executorMember && isWhitelisted(raidConfig, executorMember)) return;
+
+        const count = trackAction(`${guild.id}_chandelete_${entry.executor.id}`, raidConfig.massChannelDelete.windowMs);
+        if (count >= raidConfig.massChannelDelete.maxActions) {
+            await punishRaider(guild, entry.executor.id, raidConfig.massChannelDelete.punishment, 'Anti-Raid: eliminación masiva de canales');
+            await sendRaidAlert(guild, `Se detectó **eliminación masiva de canales** por parte de <@${entry.executor.id}>.\nCastigo aplicado: **${raidConfig.massChannelDelete.punishment}**.`);
+        }
+    } catch (error) {
+        console.error('[!] Error en detección de mass channel-delete:', error);
+    }
+});
+
+client.on(Events.ChannelCreate, async (channel) => {
+    if (!channel.guild) return;
+    const guild = channel.guild;
+    const raidConfig = getAntiraidConfig(guild.id);
+    if (!raidConfig.enabled) return;
+
+    try {
+        const auditLogs = await guild.fetchAuditLogs({ type: AuditLogEvent.ChannelCreate, limit: 5 });
+        const entry = auditLogs.entries.first();
+        if (!entry || !entry.executor || Date.now() - entry.createdTimestamp > 5000 || entry.executor.id === client.user.id) return;
+
+        const executorMember = await guild.members.fetch(entry.executor.id).catch(() => null);
+        if (executorMember && isWhitelisted(raidConfig, executorMember)) return;
+
+        const count = trackAction(`${guild.id}_chancreate_${entry.executor.id}`, raidConfig.massChannelCreate.windowMs);
+        if (count >= raidConfig.massChannelCreate.maxActions) {
+            await punishRaider(guild, entry.executor.id, raidConfig.massChannelCreate.punishment, 'Anti-Raid: creación masiva de canales');
+            await sendRaidAlert(guild, `Se detectó **creación masiva de canales** por parte de <@${entry.executor.id}>.\nCastigo aplicado: **${raidConfig.massChannelCreate.punishment}**.`);
+        }
+    } catch (error) {
+        console.error('[!] Error en detección de mass channel-create:', error);
+    }
 });
 
 // ============ API ============
@@ -1178,7 +1590,7 @@ app.get('/health', (req, res) => {
         bot: client.user?.tag || 'offline',
         guilds: client.guilds.cache.size || 0,
         role_id: OWNER_ROLE_ID,
-        anti_raid: antiRaidEnabled
+        anti_raid: Object.values(antiraidConfig).some(c => c.enabled)
     });
 });
 
