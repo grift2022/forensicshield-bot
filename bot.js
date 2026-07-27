@@ -799,88 +799,28 @@ client.on('messageCreate', async (message) => {
         }
 
         try {
-            // Eliminar mensaje del usuario
             await message.delete().catch(() => {});
 
-            // ===== CREAR PANEL (MODAL) =====
-            const modal = new ModalBuilder()
-                .setCustomId('anuncio_modal')
-                .setTitle('📢 Crear Anuncio');
+            const embed = new EmbedBuilder()
+                .setColor(0x5865F2)
+                .setTitle('📢 Crear Anuncio')
+                .setDescription('Haz clic en el botón para redactar un nuevo anuncio (título, descripción, imagen, color y pie de página).')
+                .setFooter({ text: 'Sistema de Anuncios - ForensicShield' });
 
-            // Título
-            const titleInput = new TextInputBuilder()
-                .setCustomId('anuncio_titulo')
-                .setLabel('📌 Título (opcional)')
-                .setStyle(TextInputStyle.Short)
-                .setPlaceholder('Ej: Nuevo evento en el servidor')
-                .setRequired(false)
-                .setMaxLength(100);
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('abrir_anuncio')
+                        .setLabel('📢 Crear Anuncio')
+                        .setStyle(ButtonStyle.Primary)
+                );
 
-            // Descripción
-            const descInput = new TextInputBuilder()
-                .setCustomId('anuncio_desc')
-                .setLabel('📝 Descripción')
-                .setStyle(TextInputStyle.Paragraph)
-                .setPlaceholder('Escribe el contenido del anuncio...')
-                .setRequired(true)
-                .setMaxLength(4000);
-
-            // Imagen URL
-            const imgInput = new TextInputBuilder()
-                .setCustomId('anuncio_img')
-                .setLabel('🖼️ URL de imagen (opcional)')
-                .setStyle(TextInputStyle.Short)
-                .setPlaceholder('https://i.imgur.com/ejemplo.png')
-                .setRequired(false)
-                .setMaxLength(200);
-
-            // Color
-            const colorInput = new TextInputBuilder()
-                .setCustomId('anuncio_color')
-                .setLabel('🎨 Color (#hex)')
-                .setStyle(TextInputStyle.Short)
-                .setPlaceholder('#e94560')
-                .setRequired(false)
-                .setMaxLength(7);
-
-            // Footer
-            const footerInput = new TextInputBuilder()
-                .setCustomId('anuncio_footer')
-                .setLabel('📌 Pie de página (opcional)')
-                .setStyle(TextInputStyle.Short)
-                .setPlaceholder('Equipo ForensicShield')
-                .setRequired(false)
-                .setMaxLength(50);
-
-            // Añadir campos al modal
-            const row1 = new ActionRowBuilder().addComponents(titleInput);
-            const row2 = new ActionRowBuilder().addComponents(descInput);
-            const row3 = new ActionRowBuilder().addComponents(imgInput);
-            const row4 = new ActionRowBuilder().addComponents(colorInput);
-            const row5 = new ActionRowBuilder().addComponents(footerInput);
-
-            modal.addComponents(row1, row2, row3, row4, row5);
-
-            // Mostrar modal
-            await message.author.send({ 
-                content: '📢 Abre el panel de anuncios haciendo clic en el botón de abajo:',
-                components: [
-                    new ActionRowBuilder().addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('abrir_anuncio')
-                            .setLabel('📢 Crear Anuncio')
-                            .setStyle(ButtonStyle.Primary)
-                    )
-                ]
-            });
-
-            // Enviar mensaje en el canal indicando que se ha enviado un DM
-            const dmMsg = await message.channel.send(`📢 ${message.author}, revisa tu **mensaje directo** para crear el anuncio.`);
-            setTimeout(() => dmMsg.delete().catch(() => {}), 5000);
+            await message.channel.send({ embeds: [embed], components: [row] });
+            await sendLog(message.guild, `📢 ${message.author.tag} abrió el panel de anuncios`, 0x5865F2);
 
         } catch (error) {
             console.error('[!] Error en !anuncio:', error);
-            message.reply('❌ Error al abrir el panel de anuncios. Asegúrate de tener los DMs abiertos.');
+            message.reply('❌ Error al crear el panel de anuncios.');
         }
     }
 
@@ -932,6 +872,13 @@ client.on('interactionCreate', async (interaction) => {
         
         // ===== BOTÓN PARA ABRIR MODAL DE ANUNCIO =====
         if (interaction.customId === 'abrir_anuncio') {
+            if (!hasPermission(interaction.member)) {
+                return interaction.reply({
+                    content: '❌ No tienes permiso para crear anuncios.',
+                    ephemeral: true
+                });
+            }
+
             try {
                 const modal = new ModalBuilder()
                     .setCustomId('anuncio_modal')
