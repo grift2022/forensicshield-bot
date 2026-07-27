@@ -904,7 +904,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setCustomId('anuncio_img')
                     .setLabel('🖼️ URL de imagen (opcional)')
                     .setStyle(TextInputStyle.Short)
-                    .setPlaceholder('https://i.imgur.com/ejemplo.png')
+                    .setPlaceholder('https://i.imgur.com/ejemplo')
                     .setRequired(false)
                     .setMaxLength(200);
 
