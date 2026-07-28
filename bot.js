@@ -587,6 +587,43 @@ client.on('messageCreate', async (message) => {
         }
     }
 
+    // ===== COMANDO: !duda <pregunta> (público, cualquiera puede preguntar) =====
+    if (command === 'duda') {
+        const questionText = args.join(' ').trim();
+
+        if (!questionText) {
+            return message.reply('❌ Escribe tu pregunta después del comando. Ejemplo: `!duda ¿cómo configuro el anti-raid?`');
+        }
+
+        try {
+            await message.delete().catch(() => {});
+
+            const embed = new EmbedBuilder()
+                .setColor(0xFFC107)
+                .setTitle('❓ Nueva Duda')
+                .setDescription(questionText.slice(0, 4000))
+                .addFields({ name: '📌 Estado', value: '🟡 Sin responder' })
+                .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+                .setFooter({ text: `Pregunta de ${message.author.tag} | ID:${message.author.id}` })
+                .setTimestamp();
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('duda_responder')
+                        .setLabel('💬 Responder')
+                        .setStyle(ButtonStyle.Primary)
+                );
+
+            await message.channel.send({ embeds: [embed], components: [row] });
+            await sendLog(message.guild, `❓ ${message.author.tag} publicó una duda`, 0xFFC107);
+
+        } catch (error) {
+            console.error('[!] Error en !duda:', error);
+            message.reply('❌ Error al publicar tu duda.');
+        }
+    }
+
     // ===== COMANDO: !ticket =====
     if (command === 'ticket') {
         if (!hasPermission(message.member)) {
@@ -601,9 +638,9 @@ client.on('messageCreate', async (message) => {
                 .setTitle('🎫 Sistema de Tickets')
                 .setDescription(
                     'Elige la categoría que corresponda a tu consulta:\n\n' +
-                    '🛒 **Compra** — \n' +
-                    '🎫 **Soporte** — \n' +
-                    '🤝 **Partnership** — '
+                    '🛒 **Compra** — solo visible para el Owner\n' +
+                    '🎫 **Soporte** — visible para Admins y Owner\n' +
+                    '🤝 **Partnership** — visible para Admins y Owner'
                 )
                 .setFooter({ text: 'Sistema de Tickets - ForensicShield' });
 
@@ -993,6 +1030,7 @@ client.on('messageCreate', async (message) => {
                 { name: '🔓 **Comandos Públicos**', value: 
                     '`!verificar` - Muestra tus roles actuales\n' +
                     '`!verificacion` - Crea el panel de verificación (solo la primera vez)\n' +
+                    '`!duda <pregunta>` - Publica una duda para que otra persona te ayude\n' +
                     '`!comandos` - Muestra esta lista de comandos', 
                     inline: false 
                 },
@@ -1138,6 +1176,53 @@ client.on('interactionCreate', async (interaction) => {
                 console.error('[!] Error abriendo modal de reseña:', error);
                 await interaction.reply({
                     content: '❌ Error al abrir el panel de reseñas.',
+                    ephemeral: true
+                }).catch(() => {});
+            }
+        }
+
+        // ===== BOTÓN PARA RESPONDER UNA DUDA =====
+        if (interaction.customId === 'duda_responder') {
+            try {
+                const originalEmbed = interaction.message.embeds[0];
+                const askerIdMatch = originalEmbed?.footer?.text?.match(/ID:(\d+)/);
+                const askerId = askerIdMatch ? askerIdMatch[1] : null;
+
+                if (askerId && interaction.user.id === askerId) {
+                    return interaction.reply({
+                        content: '❌ No puedes responder tu propia duda. Espera a que otra persona te ayude.',
+                        ephemeral: true
+                    });
+                }
+
+                const yaRespondida = originalEmbed?.fields?.some(f => f.name.includes('Respuesta'));
+                if (yaRespondida) {
+                    return interaction.reply({
+                        content: '⚠️ Esta duda ya fue respondida por otra persona.',
+                        ephemeral: true
+                    });
+                }
+
+                const modal = new ModalBuilder()
+                    .setCustomId('duda_respuesta_modal')
+                    .setTitle('💬 Responder Duda');
+
+                const respuestaInput = new TextInputBuilder()
+                    .setCustomId('duda_texto_respuesta')
+                    .setLabel('Tu respuesta')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Escribe tu respuesta a la duda...')
+                    .setRequired(true)
+                    .setMaxLength(1000);
+
+                modal.addComponents(new ActionRowBuilder().addComponents(respuestaInput));
+
+                await interaction.showModal(modal);
+
+            } catch (error) {
+                console.error('[!] Error abriendo modal de respuesta:', error);
+                await interaction.reply({
+                    content: '❌ Error al abrir el formulario de respuesta.',
                     ephemeral: true
                 }).catch(() => {});
             }
@@ -1595,6 +1680,60 @@ client.on('interactionCreate', async (interaction) => {
         } catch (error) {
             console.error('[!] Error en modal de anuncio:', error);
             const payload = { content: '❌ Error al enviar el anuncio.', ephemeral: true };
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp(payload).catch(() => {});
+            } else {
+                await interaction.reply(payload).catch(() => {});
+            }
+        }
+    }
+
+    // ===== MODAL DE RESPUESTA A UNA DUDA =====
+    if (interaction.isModalSubmit() && interaction.customId === 'duda_respuesta_modal') {
+        try {
+            if (!interaction.isFromMessage() || !interaction.message) {
+                return interaction.reply({
+                    content: '❌ No se pudo vincular la respuesta a la pregunta original.',
+                    ephemeral: true
+                });
+            }
+
+            const respuesta = interaction.fields.getTextInputValue('duda_texto_respuesta');
+            const originalEmbed = interaction.message.embeds[0];
+
+            if (!originalEmbed) {
+                return interaction.reply({ content: '❌ No se encontró la duda original.', ephemeral: true });
+            }
+
+            // Comprobación anti carrera: si alguien ya respondió mientras se rellenaba el modal
+            const yaRespondida = originalEmbed.fields?.some(f => f.name.includes('Respuesta'));
+            if (yaRespondida) {
+                return interaction.reply({
+                    content: '⚠️ Esta duda ya fue respondida por otra persona mientras escribías tu respuesta.',
+                    ephemeral: true
+                });
+            }
+
+            const updatedEmbed = EmbedBuilder.from(originalEmbed)
+                .setColor(0x4CAF50)
+                .spliceFields(0, 1, { name: '📌 Estado', value: '🟢 Respondida' })
+                .addFields({ name: `✅ Respuesta de ${interaction.user.tag}`, value: respuesta.slice(0, 1024) });
+
+            const disabledRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('duda_responder')
+                    .setLabel('✅ Ya respondida')
+                    .setStyle(ButtonStyle.Success)
+                    .setDisabled(true)
+            );
+
+            await interaction.update({ embeds: [updatedEmbed], components: [disabledRow] });
+
+            await sendLog(interaction.guild, `💬 ${interaction.user.tag} respondió una duda`, 0x4CAF50);
+
+        } catch (error) {
+            console.error('[!] Error en modal de respuesta a duda:', error);
+            const payload = { content: '❌ Error al enviar tu respuesta.', ephemeral: true };
             if (interaction.replied || interaction.deferred) {
                 await interaction.followUp(payload).catch(() => {});
             } else {
