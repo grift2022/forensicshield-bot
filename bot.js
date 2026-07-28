@@ -601,9 +601,9 @@ client.on('messageCreate', async (message) => {
                 .setTitle('🎫 Sistema de Tickets')
                 .setDescription(
                     'Elige la categoría que corresponda a tu consulta:\n\n' +
-                    '🛒 **Compra** — solo visible para el Owner\n' +
-                    '🎫 **Soporte** — visible para Admins y Owner\n' +
-                    '🤝 **Partnership** — visible para Admins y Owner'
+                    '🛒 **Compra** — \n' +
+                    '🎫 **Soporte** — \n' +
+                    '🤝 **Partnership** — '
                 )
                 .setFooter({ text: 'Sistema de Tickets - ForensicShield' });
 
