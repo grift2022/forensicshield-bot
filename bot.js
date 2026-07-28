@@ -14,6 +14,32 @@ const LOG_CHANNEL_ID = '1530329506445918400'; // Logs del bot
 const JOIN_CHANNEL_ID = '1530329911741649018'; // Entradas
 const TICKET_TRANSCRIPT_CHANNEL_ID = '1530516098749956167'; // Transcripciones de tickets
 
+// ============ CATEGORÍAS DE TICKETS ============
+// "roles" define quién puede ver cada tipo de ticket, además de quien lo abrió.
+const TICKET_TYPES = {
+    compra: {
+        label: '🛒 Compra',
+        buttonStyle: ButtonStyle.Success,
+        categoryName: '🛒 Tickets - Compra',
+        title: 'Ticket de Compra',
+        roles: [OWNER_ROLE_ID] // Solo el Owner
+    },
+    soporte: {
+        label: '🎫 Soporte',
+        buttonStyle: ButtonStyle.Primary,
+        categoryName: '🎫 Tickets - Soporte',
+        title: 'Ticket de Soporte',
+        roles: [OWNER_ROLE_ID, ADMIN_ROLE_ID] // Admins y Owner
+    },
+    partnership: {
+        label: '🤝 Partnership',
+        buttonStyle: ButtonStyle.Secondary,
+        categoryName: '🤝 Tickets - Partnership',
+        title: 'Ticket de Partnership',
+        roles: [OWNER_ROLE_ID, ADMIN_ROLE_ID] // Admins y Owner
+    }
+};
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 10000;
 
@@ -25,6 +51,7 @@ const VERIFICATION_FILE = path.join(DATA_DIR, 'verification.json');
 const GIVEAWAYS_FILE = path.join(DATA_DIR, 'giveaways.json'); // Sorteos
 const ANTIRAID_CONFIG_FILE = path.join(DATA_DIR, 'antiraid_config.json'); // Configuración Anti-Raid por servidor
 const RAIDER_BLACKLIST_FILE = path.join(DATA_DIR, 'raiders.json'); // Lista negra global de raiders
+const REVIEWS_FILE = path.join(DATA_DIR, 'reviews.json'); // Reseñas con estrellas
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
@@ -58,12 +85,23 @@ if (fs.existsSync(RAIDER_BLACKLIST_FILE)) {
     try { raiderBlacklist = JSON.parse(fs.readFileSync(RAIDER_BLACKLIST_FILE)); } catch { raiderBlacklist = []; }
 }
 
+let reviewsData = [];
+if (fs.existsSync(REVIEWS_FILE)) {
+    try { reviewsData = JSON.parse(fs.readFileSync(REVIEWS_FILE)); } catch { reviewsData = []; }
+}
+
 function saveInvites() { fs.writeFileSync(INVITES_FILE, JSON.stringify(invitesData, null, 2)); }
 function saveMembers() { fs.writeFileSync(MEMBERS_FILE, JSON.stringify(membersHistory, null, 2)); }
 function saveVerification() { fs.writeFileSync(VERIFICATION_FILE, JSON.stringify(verificationData, null, 2)); }
 function saveGiveaways() { fs.writeFileSync(GIVEAWAYS_FILE, JSON.stringify(giveawaysData, null, 2)); }
 function saveAntiraidConfig() { fs.writeFileSync(ANTIRAID_CONFIG_FILE, JSON.stringify(antiraidConfig, null, 2)); }
 function saveRaiderBlacklist() { fs.writeFileSync(RAIDER_BLACKLIST_FILE, JSON.stringify(raiderBlacklist, null, 2)); }
+function saveReviews() { fs.writeFileSync(REVIEWS_FILE, JSON.stringify(reviewsData, null, 2)); }
+
+// Convierte un número de 0 a 5 en estrellas visuales (⭐ llenas + ☆ vacías)
+function buildStarDisplay(stars) {
+    return '⭐'.repeat(stars) + '☆'.repeat(5 - stars);
+}
 
 // ============ CLIENTE DE DISCORD ============
 const client = new Client({
@@ -521,15 +559,28 @@ client.on('messageCreate', async (message) => {
             const embed = new EmbedBuilder()
                 .setColor(0x5865F2)
                 .setTitle('🎫 Sistema de Tickets')
-                .setDescription('Haz clic en el botón para abrir un ticket de soporte.')
+                .setDescription(
+                    'Elige la categoría que corresponda a tu consulta:\n\n' +
+                    '🛒 **Compra** — solo visible para el Owner\n' +
+                    '🎫 **Soporte** — visible para Admins y Owner\n' +
+                    '🤝 **Partnership** — visible para Admins y Owner'
+                )
                 .setFooter({ text: 'Sistema de Tickets - ForensicShield' });
 
             const row = new ActionRowBuilder()
                 .addComponents(
                     new ButtonBuilder()
-                        .setCustomId('create_ticket')
-                        .setLabel('🎫 Crear Ticket')
-                        .setStyle(ButtonStyle.Primary)
+                        .setCustomId('create_ticket_compra')
+                        .setLabel(TICKET_TYPES.compra.label)
+                        .setStyle(TICKET_TYPES.compra.buttonStyle),
+                    new ButtonBuilder()
+                        .setCustomId('create_ticket_soporte')
+                        .setLabel(TICKET_TYPES.soporte.label)
+                        .setStyle(TICKET_TYPES.soporte.buttonStyle),
+                    new ButtonBuilder()
+                        .setCustomId('create_ticket_partnership')
+                        .setLabel(TICKET_TYPES.partnership.label)
+                        .setStyle(TICKET_TYPES.partnership.buttonStyle)
                 );
 
             await message.channel.send({ embeds: [embed], components: [row] });
@@ -538,6 +589,74 @@ client.on('messageCreate', async (message) => {
         } catch (error) {
             console.error('[!] Error en !ticket:', error);
             message.reply('❌ Error al crear el panel de tickets.');
+        }
+    }
+
+    // ===== COMANDO: !resena (PANEL DE RESEÑAS) =====
+    if (command === 'resena' || command === 'reseña') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
+        try {
+            await message.delete().catch(() => {});
+
+            const embed = new EmbedBuilder()
+                .setColor(0xFFC107)
+                .setTitle('⭐ Deja tu Reseña')
+                .setDescription('Haz clic en el botón para calificarnos del 0 al 5 y dejar un comentario.')
+                .setFooter({ text: 'Sistema de Reseñas - ForensicShield' });
+
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('abrir_resena')
+                        .setLabel('⭐ Dejar Reseña')
+                        .setStyle(ButtonStyle.Primary)
+                );
+
+            await message.channel.send({ embeds: [embed], components: [row] });
+            await sendLog(message.guild, `⭐ ${message.author.tag} abrió el panel de reseñas`, 0xFFC107);
+
+        } catch (error) {
+            console.error('[!] Error en !resena:', error);
+            message.reply('❌ Error al crear el panel de reseñas.');
+        }
+    }
+
+    // ===== COMANDO: !resenastxt (EXPORTAR RESEÑAS A .TXT) =====
+    if (command === 'resenastxt' || command === 'reseñastxt') {
+        if (!hasPermission(message.member)) {
+            return message.reply('❌ No tienes permiso para usar este comando.');
+        }
+
+        if (reviewsData.length === 0) {
+            return message.reply('⚠️ Todavía no hay ninguna reseña registrada.');
+        }
+
+        try {
+            const total = reviewsData.length;
+            const avg = (reviewsData.reduce((sum, r) => sum + r.stars, 0) / total).toFixed(2);
+
+            const lines = reviewsData.map(r =>
+                `[${new Date(r.timestamp).toLocaleString()}] ${r.userTag} (${r.stars}/5) ${buildStarDisplay(r.stars)}\n` +
+                `Comentario: ${r.comment || '(sin comentario)'}\n` +
+                '---'
+            ).join('\n');
+
+            const header = `RESEÑAS - ForensicShield\nTotal: ${total} | Media: ${avg}/5\n\n`;
+            const buffer = Buffer.from(header + lines, 'utf-8');
+
+            await message.channel.send({
+                content: `📄 Exportando **${total}** reseñas (media: **${avg}/5**)`,
+                files: [{ attachment: buffer, name: 'resenas.txt' }]
+            });
+
+            await sendLog(message.guild, `📄 ${message.author.tag} exportó las reseñas a .txt`, 0xFFC107);
+
+        } catch (error) {
+            console.error('[!] Error en !resenastxt:', error);
+            message.reply('❌ Error al exportar las reseñas.');
         }
     }
 
@@ -838,11 +957,13 @@ client.on('messageCreate', async (message) => {
                     inline: false 
                 },
                 { name: '🛡️ **Comandos de Administración**', value: 
-                    '`!ticket` - Crea el panel de tickets\n' +
+                    '`!ticket` - Crea el panel de tickets (Compra/Soporte/Partnership)\n' +
                     '`!anuncio` - Abre el panel para crear anuncios\n' +
                     '`!sorteo` - Abre el panel para crear sorteos\n' +
                     '`!terminarsorteo <ID>` - Finaliza un sorteo manualmente\n' +
                     '`!rerollsorteo <ID>` - Vuelve a sortear un ganador\n' +
+                    '`!resena` - Crea el panel para dejar reseñas (0-5 ⭐)\n' +
+                    '`!resenastxt` - Exporta todas las reseñas a un .txt\n' +
                     '`!lockserver` - Bloquea el servidor (desactiva enviar mensajes)\n' +
                     '`!unlockserver` - Desbloquea el servidor\n' +
                     '`!nuke` - Limpia el canal actual (lo clona y elimina)\n' +
@@ -902,9 +1023,9 @@ client.on('interactionCreate', async (interaction) => {
 
                 const imgInput = new TextInputBuilder()
                     .setCustomId('anuncio_img')
-                    .setLabel('🖼️ URL de imagen (déjalo vacío para subir archivo)')
+                    .setLabel('🖼️ URL de imagen (opcional)')
                     .setStyle(TextInputStyle.Short)
-                    .setPlaceholder('Déjalo vacío y luego sube el archivo al canal')
+                    .setPlaceholder('Vacío = podrás subir el archivo después')
                     .setRequired(false)
                     .setMaxLength(200);
 
@@ -940,6 +1061,45 @@ client.on('interactionCreate', async (interaction) => {
                     content: '❌ Error al abrir el panel.',
                     ephemeral: true
                 });
+            }
+        }
+
+        // ===== BOTÓN PARA ABRIR MODAL DE RESEÑA (cualquier miembro puede dejar una) =====
+        if (interaction.customId === 'abrir_resena') {
+            try {
+                const modal = new ModalBuilder()
+                    .setCustomId('resena_modal')
+                    .setTitle('⭐ Dejar Reseña');
+
+                const starsInput = new TextInputBuilder()
+                    .setCustomId('resena_estrellas')
+                    .setLabel('⭐ Estrellas (0 a 5)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('Ej: 5')
+                    .setRequired(true)
+                    .setMaxLength(1);
+
+                const commentInput = new TextInputBuilder()
+                    .setCustomId('resena_comentario')
+                    .setLabel('📝 Comentario (opcional)')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Cuéntanos tu experiencia...')
+                    .setRequired(false)
+                    .setMaxLength(500);
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(starsInput),
+                    new ActionRowBuilder().addComponents(commentInput)
+                );
+
+                await interaction.showModal(modal);
+
+            } catch (error) {
+                console.error('[!] Error abriendo modal de reseña:', error);
+                await interaction.reply({
+                    content: '❌ Error al abrir el panel de reseñas.',
+                    ephemeral: true
+                }).catch(() => {});
             }
         }
 
@@ -1077,49 +1237,58 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // ===== CREAR TICKET =====
-        if (interaction.customId === 'create_ticket') {
+        // ===== CREAR TICKET (por categoría: compra / soporte / partnership) =====
+        if (interaction.customId.startsWith('create_ticket_')) {
             try {
+                const type = interaction.customId.replace('create_ticket_', '');
+                const typeConfig = TICKET_TYPES[type];
+                if (!typeConfig) {
+                    return interaction.reply({ content: '❌ Categoría de ticket desconocida.', ephemeral: true });
+                }
+
                 const guild = interaction.guild;
                 const existingChannel = guild.channels.cache.find(
-                    ch => ch.name === `ticket-${interaction.user.id}` && ch.parent?.name === 'Tickets'
+                    ch => ch.name === `${type}-${interaction.user.id}`
                 );
 
                 if (existingChannel) {
                     return interaction.reply({
-                        content: '⚠️ Ya tienes un ticket abierto: <#' + existingChannel.id + '>',
+                        content: `⚠️ Ya tienes un ticket de ${typeConfig.label} abierto: <#${existingChannel.id}>`,
                         ephemeral: true
                     });
                 }
 
-                let category = guild.channels.cache.find(ch => ch.name === 'Tickets' && ch.type === ChannelType.GuildCategory);
+                const roleOverwrites = typeConfig.roles.map(roleId => ({
+                    id: roleId,
+                    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+                }));
+
+                let category = guild.channels.cache.find(ch => ch.name === typeConfig.categoryName && ch.type === ChannelType.GuildCategory);
                 if (!category) {
                     category = await guild.channels.create({
-                        name: 'Tickets',
+                        name: typeConfig.categoryName,
                         type: ChannelType.GuildCategory,
                         permissionOverwrites: [
                             { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                            { id: OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-                            { id: ADMIN_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+                            ...roleOverwrites
                         ]
                     });
                 }
 
                 const channel = await guild.channels.create({
-                    name: `ticket-${interaction.user.id}`,
+                    name: `${type}-${interaction.user.id}`,
                     type: ChannelType.GuildText,
                     parent: category.id,
                     permissionOverwrites: [
                         { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
                         { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-                        { id: OWNER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-                        { id: ADMIN_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+                        ...roleOverwrites
                     ]
                 });
 
                 const embed = new EmbedBuilder()
                     .setColor(0x5865F2)
-                    .setTitle('🎫 Nuevo Ticket')
+                    .setTitle(`🎫 ${typeConfig.title}`)
                     .setDescription(`Bienvenido ${interaction.user}, un administrador te atenderá pronto.`)
                     .setTimestamp();
 
@@ -1135,8 +1304,9 @@ client.on('interactionCreate', async (interaction) => {
                             .setStyle(ButtonStyle.Danger)
                     );
 
+                const roleMentions = typeConfig.roles.map(r => `<@&${r}>`).join(' ');
                 await channel.send({
-                    content: `<@${interaction.user.id}> <@&${OWNER_ROLE_ID}> <@&${ADMIN_ROLE_ID}>`,
+                    content: `<@${interaction.user.id}> ${roleMentions}`,
                     embeds: [embed],
                     components: [row]
                 });
@@ -1145,14 +1315,14 @@ client.on('interactionCreate', async (interaction) => {
                     content: `✅ Ticket creado: <#${channel.id}>`,
                     ephemeral: true
                 });
-                await sendLog(interaction.guild, `🎫 ${interaction.user.tag} abrió un ticket`, 0x5865F2);
+                await sendLog(interaction.guild, `🎫 ${interaction.user.tag} abrió un ticket de ${typeConfig.label}`, 0x5865F2);
 
             } catch (error) {
                 console.error('[!] Error creando ticket:', error);
                 await interaction.reply({
                     content: '❌ Error al crear el ticket.',
                     ephemeral: true
-                });
+                }).catch(() => {});
             }
         }
 
@@ -1174,7 +1344,7 @@ client.on('interactionCreate', async (interaction) => {
                     ephemeral: false
                 });
 
-                const newName = `reclamado-${interaction.channel.name.replace('ticket-', '')}`;
+                const newName = `reclamado-${interaction.channel.name.replace(/^(compra|soporte|partnership|ticket)-/, '')}`;
                 await interaction.channel.setName(newName).catch(() => {});
 
                 await sendLog(interaction.guild, `📌 ${interaction.user.tag} reclamó el ticket ${interaction.channel.name}`, 0xFF9800);
@@ -1390,6 +1560,60 @@ client.on('interactionCreate', async (interaction) => {
             } else {
                 await interaction.reply(payload).catch(() => {});
             }
+        }
+    }
+
+    // ===== MODAL DE RESEÑA =====
+    if (interaction.isModalSubmit() && interaction.customId === 'resena_modal') {
+        try {
+            const starsRaw = interaction.fields.getTextInputValue('resena_estrellas');
+            const comment = interaction.fields.getTextInputValue('resena_comentario') || '';
+
+            const stars = parseInt(starsRaw, 10);
+            if (isNaN(stars) || stars < 0 || stars > 5) {
+                return interaction.reply({
+                    content: '❌ Las estrellas deben ser un número entero entre 0 y 5.',
+                    ephemeral: true
+                });
+            }
+
+            const review = {
+                id: `${interaction.user.id}_${Date.now()}`,
+                userId: interaction.user.id,
+                userTag: interaction.user.tag,
+                stars,
+                comment: comment.trim(),
+                timestamp: Date.now()
+            };
+
+            reviewsData.push(review);
+            saveReviews();
+
+            const embed = new EmbedBuilder()
+                .setColor(0xFFC107)
+                .setTitle('⭐ Nueva Reseña')
+                .setDescription(
+                    `${buildStarDisplay(stars)} (${stars}/5)\n` +
+                    (review.comment ? `\n${review.comment}` : '')
+                )
+                .setAuthor({ name: interaction.user.username, iconURL: interaction.user.displayAvatarURL() })
+                .setTimestamp();
+
+            await interaction.channel.send({ embeds: [embed] });
+
+            await interaction.reply({
+                content: '✅ ¡Gracias por tu reseña!',
+                ephemeral: true
+            });
+
+            await sendLog(interaction.guild, `⭐ ${interaction.user.tag} dejó una reseña de ${stars}/5`, 0xFFC107);
+
+        } catch (error) {
+            console.error('[!] Error en modal de reseña:', error);
+            await interaction.reply({
+                content: '❌ Error al guardar la reseña.',
+                ephemeral: true
+            }).catch(() => {});
         }
     }
 });
