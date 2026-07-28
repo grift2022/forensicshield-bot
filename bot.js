@@ -870,97 +870,78 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton()) {
         
-// ===== MODAL DE ANUNCIO =====
-if (interaction.isModalSubmit() && interaction.customId === 'anuncio_modal') {
-    try {
-        const title = interaction.fields.getTextInputValue('anuncio_titulo') || '';
-        const description = interaction.fields.getTextInputValue('anuncio_desc');
-        const imageUrlRaw = interaction.fields.getTextInputValue('anuncio_img') || '';
-        const color = interaction.fields.getTextInputValue('anuncio_color') || '#e94560';
-        const footer = interaction.fields.getTextInputValue('anuncio_footer') || '';
-
-        if (!description || description.trim() === '') {
-            return interaction.reply({
-                content: '❌ Debes escribir una descripción para el anuncio.',
-                ephemeral: true
-            });
-        }
-
-        const colorRegex = /^#[0-9a-fA-F]{6}$/;
-        const finalColor = colorRegex.test(color) ? color : '#e94560';
-
-        // Respondemos rápido con un "pensando..." porque validar la imagen tarda un poco
-        await interaction.deferReply({ ephemeral: true });
-
-        // ===== VALIDAR / CORREGIR URL DE IMAGEN =====
-        let imageUrl = null;
-        let imageWarning = null;
-
-        if (imageUrlRaw && imageUrlRaw.trim() !== '') {
-            let candidate = imageUrlRaw.trim();
-
-            // Auto-corregir links de la página de imgur (imgur.com/xxx o imgur.com/a/xxx)
-            const imgurPageMatch = candidate.match(/^https?:\/\/(?:www\.)?imgur\.com\/(?:a\/)?([a-zA-Z0-9]+)\/?$/i);
-            if (imgurPageMatch) {
-                candidate = `https://i.imgur.com/${imgurPageMatch[1]}.png`;
+        // ===== BOTÓN PARA ABRIR MODAL DE ANUNCIO =====
+        if (interaction.customId === 'abrir_anuncio') {
+            if (!hasPermission(interaction.member)) {
+                return interaction.reply({
+                    content: '❌ No tienes permiso para crear anuncios.',
+                    ephemeral: true
+                });
             }
 
-            if (!/^https?:\/\//i.test(candidate)) {
-                imageWarning = '⚠️ La URL no empieza por http:// o https://. Se envió sin imagen.';
-            } else {
-                try {
-                    const res = await fetch(candidate, { method: 'GET', redirect: 'follow' });
-                    const contentType = res.headers.get('content-type') || '';
+            try {
+                const modal = new ModalBuilder()
+                    .setCustomId('anuncio_modal')
+                    .setTitle('📢 Crear Anuncio');
 
-                    if (!res.ok) {
-                        imageWarning = `⚠️ No se pudo cargar la imagen (HTTP ${res.status}). Comprueba que el enlace sea correcto, público y no haya sido borrado. Se envió sin imagen.`;
-                    } else if (!contentType.startsWith('image/')) {
-                        imageWarning = `⚠️ Ese enlace no es una imagen directa (Content-Type: ${contentType || 'desconocido'}). En Imgur: clic derecho sobre la imagen → "Copiar dirección de imagen". Se envió sin imagen.`;
-                    } else {
-                        imageUrl = candidate;
-                    }
-                } catch (fetchError) {
-                    console.error('[!] Error verificando imagen:', fetchError);
-                    imageWarning = '⚠️ No se pudo verificar la imagen (error de red al comprobarla). Se envió sin imagen.';
-                }
+                const titleInput = new TextInputBuilder()
+                    .setCustomId('anuncio_titulo')
+                    .setLabel('📌 Título (opcional)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('Ej: Nuevo evento en el servidor')
+                    .setRequired(false)
+                    .setMaxLength(100);
+
+                const descInput = new TextInputBuilder()
+                    .setCustomId('anuncio_desc')
+                    .setLabel('📝 Descripción')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Escribe el contenido del anuncio...')
+                    .setRequired(true)
+                    .setMaxLength(4000);
+
+                const imgInput = new TextInputBuilder()
+                    .setCustomId('anuncio_img')
+                    .setLabel('🖼️ URL de imagen (déjalo vacío para subir archivo)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('Déjalo vacío y luego sube el archivo al canal')
+                    .setRequired(false)
+                    .setMaxLength(200);
+
+                const colorInput = new TextInputBuilder()
+                    .setCustomId('anuncio_color')
+                    .setLabel('🎨 Color (#hex)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('#e94560')
+                    .setRequired(false)
+                    .setMaxLength(7);
+
+                const footerInput = new TextInputBuilder()
+                    .setCustomId('anuncio_footer')
+                    .setLabel('📌 Pie de página (opcional)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('Equipo ForensicShield')
+                    .setRequired(false)
+                    .setMaxLength(50);
+
+                const row1 = new ActionRowBuilder().addComponents(titleInput);
+                const row2 = new ActionRowBuilder().addComponents(descInput);
+                const row3 = new ActionRowBuilder().addComponents(imgInput);
+                const row4 = new ActionRowBuilder().addComponents(colorInput);
+                const row5 = new ActionRowBuilder().addComponents(footerInput);
+
+                modal.addComponents(row1, row2, row3, row4, row5);
+
+                await interaction.showModal(modal);
+
+            } catch (error) {
+                console.error('[!] Error abriendo modal:', error);
+                await interaction.reply({
+                    content: '❌ Error al abrir el panel.',
+                    ephemeral: true
+                });
             }
         }
-
-        // ===== CONSTRUIR ANUNCIO =====
-        const embed = new EmbedBuilder()
-            .setColor(finalColor)
-            .setTimestamp();
-
-        if (title) embed.setTitle(title);
-        embed.setDescription(description);
-
-        embed.setAuthor({
-            name: interaction.user.username,
-            iconURL: interaction.user.displayAvatarURL()
-        });
-
-        if (imageUrl) embed.setImage(imageUrl);
-        if (footer) embed.setFooter({ text: footer });
-
-        // ===== ENVIAR ANUNCIO =====
-        await interaction.channel.send({ embeds: [embed] });
-
-        await interaction.editReply({
-            content: imageWarning ? `✅ Anuncio enviado.\n${imageWarning}` : '✅ Anuncio enviado correctamente.'
-        });
-
-        await sendLog(interaction.guild, `📢 ${interaction.user.tag} envió un anuncio`, 0xFF9800);
-
-    } catch (error) {
-        console.error('[!] Error en modal de anuncio:', error);
-        const payload = { content: '❌ Error al enviar el anuncio.', ephemeral: true };
-        if (interaction.deferred || interaction.replied) {
-            await interaction.editReply(payload).catch(() => {});
-        } else {
-            await interaction.reply(payload).catch(() => {});
-        }
-    }
-}
 
         // ===== BOTÓN PARA ABRIR MODAL DE SORTEO =====
         if (interaction.customId === 'abrir_sorteo') {
@@ -1314,10 +1295,9 @@ if (interaction.isModalSubmit() && interaction.customId === 'anuncio_modal') {
     // ===== MODAL DE ANUNCIO =====
     if (interaction.isModalSubmit() && interaction.customId === 'anuncio_modal') {
         try {
-            // Obtener valores del modal
             const title = interaction.fields.getTextInputValue('anuncio_titulo') || '';
             const description = interaction.fields.getTextInputValue('anuncio_desc');
-            const imageUrl = interaction.fields.getTextInputValue('anuncio_img') || '';
+            const imageUrlRaw = (interaction.fields.getTextInputValue('anuncio_img') || '').trim();
             const color = interaction.fields.getTextInputValue('anuncio_color') || '#e94560';
             const footer = interaction.fields.getTextInputValue('anuncio_footer') || '';
 
@@ -1332,6 +1312,39 @@ if (interaction.isModalSubmit() && interaction.customId === 'anuncio_modal') {
             // Validar color
             const colorRegex = /^#[0-9a-fA-F]{6}$/;
             const finalColor = colorRegex.test(color) ? color : '#e94560';
+
+            // Si el usuario puso una URL directa, la usamos tal cual (sin verificarla por red,
+            // esa comprobación por fetch era la que estaba fallando)
+            let imageUrl = null;
+            if (imageUrlRaw && (imageUrlRaw.startsWith('http://') || imageUrlRaw.startsWith('https://'))) {
+                imageUrl = imageUrlRaw;
+            }
+
+            // Si NO puso ninguna URL, le damos la opción de subir la imagen
+            // directamente desde su ordenador como archivo adjunto en el canal.
+            if (!imageUrl) {
+                await interaction.reply({
+                    content: '📎 No pusiste ninguna URL de imagen.\nSi quieres añadir una, **sube el archivo ahora mismo en este canal** (arrástralo o adjúntalo y envíalo). Tienes 60 segundos.\nSi no quieres imagen, no hagas nada: el anuncio se enviará solo con texto cuando termine la espera.',
+                    ephemeral: true
+                });
+
+                const collected = await interaction.channel.awaitMessages({
+                    filter: m => m.author.id === interaction.user.id && m.attachments.size > 0,
+                    max: 1,
+                    time: 60000,
+                    errors: ['time']
+                }).catch(() => null);
+
+                if (collected && collected.size > 0) {
+                    const uploadMsg = collected.first();
+                    const attachment = uploadMsg.attachments.first();
+                    if (attachment && attachment.contentType && attachment.contentType.startsWith('image/')) {
+                        imageUrl = attachment.url;
+                    }
+                    // Borramos el mensaje con el archivo para no dejar duplicados en el canal
+                    await uploadMsg.delete().catch(() => {});
+                }
+            }
 
             // ===== CONSTRUIR ANUNCIO =====
             const embed = new EmbedBuilder()
@@ -1348,13 +1361,7 @@ if (interaction.isModalSubmit() && interaction.customId === 'anuncio_modal') {
             });
 
             // Imagen
-            if (imageUrl && imageUrl.trim() !== '') {
-                try {
-                    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-                        embed.setImage(imageUrl);
-                    }
-                } catch (e) { /* ignorar */ }
-            }
+            if (imageUrl) embed.setImage(imageUrl);
 
             // Footer
             if (footer) {
@@ -1364,21 +1371,25 @@ if (interaction.isModalSubmit() && interaction.customId === 'anuncio_modal') {
             // ===== ENVIAR ANUNCIO =====
             await interaction.channel.send({ embeds: [embed] });
 
-            // Respuesta al usuario
-            await interaction.reply({
-                content: '✅ Anuncio enviado correctamente.',
-                ephemeral: true
-            });
+            // Respuesta al usuario (reply si aún no habíamos respondido, followUp si ya lo hicimos)
+            const confirmText = '✅ Anuncio enviado correctamente.';
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp({ content: confirmText, ephemeral: true }).catch(() => {});
+            } else {
+                await interaction.reply({ content: confirmText, ephemeral: true }).catch(() => {});
+            }
 
             // Log
             await sendLog(interaction.guild, `📢 ${interaction.user.tag} envió un anuncio`, 0xFF9800);
 
         } catch (error) {
             console.error('[!] Error en modal de anuncio:', error);
-            await interaction.reply({
-                content: '❌ Error al enviar el anuncio. Verifica que la URL de la imagen sea válida.',
-                ephemeral: true
-            });
+            const payload = { content: '❌ Error al enviar el anuncio.', ephemeral: true };
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp(payload).catch(() => {});
+            } else {
+                await interaction.reply(payload).catch(() => {});
+            }
         }
     }
 });
