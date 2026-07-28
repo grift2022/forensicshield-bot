@@ -13,6 +13,7 @@ const USER_ROLE_ID = '1530313975361703978';     // User/No verificado
 const LOG_CHANNEL_ID = '1530329506445918400'; // Logs del bot
 const JOIN_CHANNEL_ID = '1530329911741649018'; // Entradas
 const TICKET_TRANSCRIPT_CHANNEL_ID = '1530516098749956167'; // Transcripciones de tickets
+const MESSAGE_LOG_CHANNEL_ID = '1531660215689281627'; // Espejo de TODOS los mensajes del servidor
 
 // ============ CATEGORÍAS DE TICKETS ============
 // "roles" define quién puede ver cada tipo de ticket, además de quien lo abrió.
@@ -138,6 +139,42 @@ async function sendLog(guild, message, color = 0x5865F2) {
             .setTimestamp();
         await logChannel.send({ embeds: [embed] }).catch(() => {});
     }
+}
+
+// ============ LOG GLOBAL DE TODOS LOS MENSAJES ============
+// Reenvía cualquier mensaje enviado en cualquier canal del servidor al canal MESSAGE_LOG_CHANNEL_ID.
+async function logMessageGlobally(message) {
+    if (!message.guild) return; // ignorar DMs
+    if (message.channel.id === MESSAGE_LOG_CHANNEL_ID) return; // evitar bucle infinito
+    if (message.author.id === client.user.id) return; // no registrar los propios mensajes del bot
+
+    const logChannel = message.guild.channels.cache.get(MESSAGE_LOG_CHANNEL_ID);
+    if (!logChannel) return;
+
+    const contentPreview = message.content && message.content.trim() !== ''
+        ? message.content.slice(0, 4000)
+        : '*(sin texto: solo archivo adjunto, embed o sticker)*';
+
+    const embed = new EmbedBuilder()
+        .setColor(0x2F3136)
+        .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+        .setDescription(contentPreview)
+        .addFields(
+            { name: 'Canal', value: `${message.channel}`, inline: true },
+            { name: 'ID de usuario', value: message.author.id, inline: true }
+        )
+        .setFooter({ text: `ID de mensaje: ${message.id}` })
+        .setTimestamp(message.createdAt);
+
+    if (message.attachments.size > 0) {
+        const fileList = message.attachments.map(a => `[${a.name}](${a.url})`).join('\n').slice(0, 1024);
+        embed.addFields({ name: `📎 Archivos adjuntos (${message.attachments.size})`, value: fileList });
+
+        const firstImage = message.attachments.find(a => a.contentType && a.contentType.startsWith('image/'));
+        if (firstImage) embed.setImage(firstImage.url);
+    }
+
+    await logChannel.send({ embeds: [embed] }).catch(() => {});
 }
 
 // ============ SISTEMA ANTI-RAID AVANZADO ============
@@ -466,6 +503,9 @@ client.once('ready', () => {
 // ============ COMANDOS ============
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
+
+    // ===== ESPEJO: reenviar este mensaje al canal de logs =====
+    logMessageGlobally(message).catch(() => {});
 
     // ===== ANTI-SPAM: invitaciones de Discord =====
     if (message.guild && message.member) {
